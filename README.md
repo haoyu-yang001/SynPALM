@@ -1,8 +1,15 @@
 # SynPALM: Synthetic Phenotype Assisted Linear Mixed Models
 
-[![R-CMD-check](https://github.com/haoyu-yang001/SynPALM/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/haoyu-yang001/SynPALM/actions/workflows/R-CMD-check.yaml)
+`SynPALM` is a robust and computationally scalable statistical framework for proteome-wide GWAS in the presence of partially observed measurements. 
 
-`SynPALM` is a statistical framework designed to enhance the power of Genome-Wide Association Studies (GWAS) by leveraging synthetic or surrogate phenotypes. It is specifically optimized for scenarios where the primary target phenotype has significant missingness and the study population includes related individuals (kinship structure).
+## Introduction
+
+The UK Biobank Pharma Proteomics Project (UKB-PPP) generated plasma proteomic data for 54,219 participants. However, proteomic measurements remain unavailable for approximately 90% of the 500,000 UK Biobank participants, significantly limiting the power for genetic discovery. While traditional imputation can yield spurious associations if prediction models are misspecified, **Syn-PALM** offers a robust alternative.
+
+Syn-PALM jointly analyzes partially observed proteomic measurements and complete synthetic proteomic data (predicted via machine learning) while accounting for cryptic relatedness and population structure using mixed models. It is designed to be:
+- **Robust**: Prevents false positives even when proteomic prediction models are misspecified.
+- **Powerful**: Increases statistical power as prediction accuracy improves.
+- **Scalable**: Efficiently handles large-scale datasets like the UK Biobank.
 
 ## Key Features
 
