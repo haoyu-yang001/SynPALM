@@ -18,7 +18,7 @@ You can install the development version of `SynPALM` from [GitHub](https://githu
 ```r
 # install.packages("devtools")
 devtools::install_github("haoyu-yang001/SynPALM")
-``
+```
 
 ## Quick Start Example
 
