@@ -1,5 +1,6 @@
 Package: SynPALM
-Title: Robust Synthetic Data–Assisted Genome-Wide Association Studies Boost Proteome-Wide Genetic Discovery with Partially Observed Data in Biobanks
+Title: Synthetic Phenotype Assisted Linear Mixed Models Improve
+       Proteome-Wide Genetic Discovery in Incomplete Biobank Data
 Version: 0.1.0
 Authors@R: person("Haoyu", "Yang", email = "haoyuyang@hsph.harvard.edu", role = c("aut", "cre"))
 Description: A specialized statistical framework for enhancing GWAS power by leveraging 
