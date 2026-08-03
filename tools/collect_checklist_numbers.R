@@ -54,7 +54,7 @@ cat("==========================================================\n\n")
 
 gc(reset = TRUE, full = TRUE)
 invisible(capture.output(
-  source(system.file("demo", "quickstart.R", package = "SynPALM"))
+  source(system.file("examples", "quickstart.R", package = "SynPALM"))
 ))
 peak_mb <- sum(gc()[, "max used"] * c(8, 8) / 1e6)
 cat("Peak R memory during demo (approx. MB): ", round(peak_mb), "\n", sep = "")
@@ -67,7 +67,7 @@ cat("Running the seeded demo again with full output.\n")
 cat("Copy EVERYTHING between the markers into the README\n")
 cat("'Expected output' block, verbatim.\n\n")
 cat("-------- BEGIN EXPECTED OUTPUT --------\n")
-source(system.file("demo", "quickstart.R", package = "SynPALM"))
+source(system.file("examples", "quickstart.R", package = "SynPALM"))
 cat("--------- END EXPECTED OUTPUT ---------\n")
 
 cat("\n==========================================================\n")

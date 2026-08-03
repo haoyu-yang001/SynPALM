@@ -1,12 +1,4 @@
 ## functions ########
-library(lattice)
-library(data.table)
-library(dplyr)
-library(Matrix)
-library(GMMAT)
-library(ranger)
-library(parallel)
-library(withr)
 
 
 
@@ -2182,10 +2174,10 @@ Obs_ablation_estimate <- function(mydf,independent_indices) {
   ## obtain the submatrix of GRM
   obs_protein_index <- which(!is.na(test_df_independent$Y_obs))
 
-  data_obs <- data.frame(
+  data_obs <- na.omit(data.frame(
     y = test_df_independent$Y_obs,
     x = test_df_independent[, grepl("^X\\.", names(test_df_independent))]
-  )%>% na.omit()
+  ))
 
   n_obs <- nrow(data_obs)
 

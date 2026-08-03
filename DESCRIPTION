@@ -11,11 +11,8 @@ Encoding: UTF-8
 RoxygenNote: 7.3.2
 Imports: 
     Matrix,
+    methods,
+    parallel,
     stats,
-    Rcpp,
-    lattice,
-    data.table,
-    dplyr,
-    GMMAT,
-    ranger,
-    withr
+    utils,
+    dplyr

@@ -64,7 +64,7 @@ make_sample_file <- function(eid, covariates = NULL, file_out = "output.sample")
     append = TRUE
   )
 
-  message("✅ .sample file written to: ", file_out)
+  message("Done: .sample file written to: ", file_out)
 }
 
 #' Split Samples into Training and Testing Sets by Blocks
@@ -264,6 +264,14 @@ INT <- function(data, pheno, k = 0.375){
 #' @export
 find_blocks_vectorized <- function(A) {
   n <- nrow(A)
+  # summary() only yields an i/j/x triplet for *general* C-sparse matrices.
+  # A base matrix or dense Matrix gives per-column stats (hence a cryptic
+  # "$ operator is invalid for atomic vectors"), and a *symmetric* sparse
+  # matrix (dsCMatrix) yields only the lower triangle, which would silently
+  # produce wrong block boundaries. Normalise the input first.
+  if (!(methods::is(A, "CsparseMatrix") && methods::is(A, "generalMatrix"))) {
+    A <- methods::as(methods::as(A, "CsparseMatrix"), "generalMatrix")
+  }
   # Extract triplet information (i, j, x) of non-zero elements
   sm <- summary(A)
 
@@ -313,6 +321,14 @@ find_blocks_vectorized <- function(A) {
 #' @export
 find_blocks_vectorized_threshold <- function(A, threshold = 0.005) {
   n <- nrow(A)
+  # summary() only yields an i/j/x triplet for *general* C-sparse matrices.
+  # A base matrix or dense Matrix gives per-column stats (hence a cryptic
+  # "$ operator is invalid for atomic vectors"), and a *symmetric* sparse
+  # matrix (dsCMatrix) yields only the lower triangle, which would silently
+  # produce wrong block boundaries. Normalise the input first.
+  if (!(methods::is(A, "CsparseMatrix") && methods::is(A, "generalMatrix"))) {
+    A <- methods::as(methods::as(A, "CsparseMatrix"), "generalMatrix")
+  }
   # Extract triplet information (i, j, x) and keep only elements >= threshold
   sm <- summary(A)
   sm <- sm[abs(sm$x) >= threshold, ]
