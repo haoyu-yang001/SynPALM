@@ -2,18 +2,23 @@
 % Please edit documentation in R/synpalm_functions.R
 \name{score_test_unObsG_hatY_multiply}
 \alias{score_test_unObsG_hatY_multiply}
-\title{score_test_unObsG_hatY_multiply}
+\title{Score test of the synthetic phenotype among unmeasured individuals}
 \usage{
 score_test_unObsG_hatY_multiply(g_matrix, step1_pars)
 }
 \arguments{
-\item{g_matrix}{TODO: describe.}
+\item{g_matrix}{Numeric genotype matrix, individuals in rows and variants
+in columns, over the full cohort.}
 
-\item{step1_pars}{TODO: describe.}
+\item{step1_pars}{The list returned by
+\code{\link{unObsG_hatY_typeIerror_step1}}.}
 }
 \value{
-TODO: describe the return value.
+A named list with the score statistic, \eqn{-\log_{10}} p-value,
+  effect estimate and its variance, one entry per variant.
 }
 \description{
-TODO: one line describing what score_test_unObsG_hatY_multiply() does.
+Mixed-model score test for association between each variant and the
+synthetic phenotype, restricted to individuals with no measured target
+phenotype.
 }

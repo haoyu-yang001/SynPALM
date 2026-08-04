@@ -6,13 +6,16 @@
 ## guaranteed to agree.
 ## ---------------------------------------------------------------------------
 
-#' reset_temp_dir
+#' Clear and recreate a scratch directory
 #'
-#' TODO: one line describing what reset_temp_dir() does.
+#' Deletes \code{dir} and everything inside it if it exists, then creates it
+#' again as an empty directory. Used to give each job a clean temporary
+#' workspace before writing intermediate files.
 #'
-#' @param dir TODO: describe.
+#' @param dir Character path to the directory to reset.
 #'
-#' @return TODO: describe the return value.
+#' @return Called for its side effect on the file system; returns \code{NULL}
+#'   invisibly.
 #' @export
 reset_temp_dir <- function(dir) {
   if (dir.exists(dir)) {
@@ -889,14 +892,19 @@ score_test_ObsG_multiply <- function(g_matrix,step1_pars) {
   return(results)
 }
 
-#' score_test_ObsG_hatY_multiply
+#' Score test of the synthetic phenotype among measured individuals
 #'
-#' TODO: one line describing what score_test_ObsG_hatY_multiply() does.
+#' Mixed-model score test for association between each variant and the
+#' synthetic phenotype, restricted to individuals who also have a measured
+#' target phenotype.
 #'
-#' @param g_matrix TODO: describe.
-#' @param step1_pars TODO: describe.
+#' @param g_matrix Numeric genotype matrix, individuals in rows and variants
+#'   in columns, over the full cohort.
+#' @param step1_pars The list returned by
+#'   \code{\link{ObsG_hatY_typeIerror_step1}}.
 #'
-#' @return TODO: describe the return value.
+#' @return A named list with the score statistic, \eqn{-\log_{10}} p-value,
+#'   effect estimate and its variance, one entry per variant.
 #' @export
 score_test_ObsG_hatY_multiply <- function(g_matrix,step1_pars) {
   
@@ -923,14 +931,19 @@ score_test_ObsG_hatY_multiply <- function(g_matrix,step1_pars) {
   return(results)
 }
 
-#' score_test_unObsG_hatY_multiply
+#' Score test of the synthetic phenotype among unmeasured individuals
 #'
-#' TODO: one line describing what score_test_unObsG_hatY_multiply() does.
+#' Mixed-model score test for association between each variant and the
+#' synthetic phenotype, restricted to individuals with no measured target
+#' phenotype.
 #'
-#' @param g_matrix TODO: describe.
-#' @param step1_pars TODO: describe.
+#' @param g_matrix Numeric genotype matrix, individuals in rows and variants
+#'   in columns, over the full cohort.
+#' @param step1_pars The list returned by
+#'   \code{\link{unObsG_hatY_typeIerror_step1}}.
 #'
-#' @return TODO: describe the return value.
+#' @return A named list with the score statistic, \eqn{-\log_{10}} p-value,
+#'   effect estimate and its variance, one entry per variant.
 #' @export
 score_test_unObsG_hatY_multiply <- function(g_matrix,step1_pars) {
   
@@ -2490,13 +2503,21 @@ ObsG_typeIerror_step1 <- function(mydf) {
   
 }
 
-#' ObsG_hatY_typeIerror_step1
+#' Null model for the synthetic phenotype among measured individuals
 #'
-#' TODO: one line describing what ObsG_hatY_typeIerror_step1() does.
+#' Fits the linear mixed null model to the synthetic (predicted) phenotype,
+#' restricted to individuals who also have a measured target phenotype, and
+#' returns the quantities the corresponding score test reuses across variants.
+#' Used to check that the synthetic phenotype alone is well calibrated.
 #'
-#' @param mydf TODO: describe.
+#' @param mydf A list with elements \code{X_all} (covariates for all
+#'   individuals, columns prefixed "X."), \code{Y} (oracle target
+#'   phenotype), \code{Y_obs} (measured target phenotype, \code{NA} where
+#'   unmeasured), \code{S} (synthetic phenotype) and \code{GRM} (sparse
+#'   genetic relatedness matrix).
 #'
-#' @return TODO: describe the return value.
+#' @return A named list of precomputed step-1 quantities, to be passed as
+#'   \code{step1_pars} to \code{\link{score_test_ObsG_hatY_multiply}}.
 #' @export
 ObsG_hatY_typeIerror_step1 <- function(mydf) {
   
@@ -2549,13 +2570,18 @@ ObsG_hatY_typeIerror_step1 <- function(mydf) {
   
 }
 
-#' unObsG_hatY_typeIerror_step1
+#' Null model for the synthetic phenotype among unmeasured individuals
 #'
-#' TODO: one line describing what unObsG_hatY_typeIerror_step1() does.
+#' As \code{\link{ObsG_hatY_typeIerror_step1}}, but restricted to the
+#' individuals with no measured target phenotype. Fitting the two subsets
+#' separately makes it possible to check that the synthetic phenotype behaves
+#' the same way in both.
 #'
-#' @param mydf TODO: describe.
+#' @param mydf A list with elements \code{X_all}, \code{Y}, \code{Y_obs},
+#'   \code{S} and \code{GRM}; see \code{\link{ObsG_hatY_typeIerror_step1}}.
 #'
-#' @return TODO: describe the return value.
+#' @return A named list of precomputed step-1 quantities, to be passed as
+#'   \code{step1_pars} to \code{\link{score_test_unObsG_hatY_multiply}}.
 #' @export
 unObsG_hatY_typeIerror_step1 <- function(mydf) {
   
@@ -2608,13 +2634,19 @@ unObsG_hatY_typeIerror_step1 <- function(mydf) {
   
 }
 
-#' ObsG_typeIerror_step1_lm
+#' Ordinary least squares null model for the measured target phenotype
 #'
-#' TODO: one line describing what ObsG_typeIerror_step1_lm() does.
+#' Fits the null model by ordinary least squares, ignoring relatedness, to the
+#' individuals with a measured target phenotype. Provides the reference
+#' against which the mixed-model analyses are compared: any inflation this
+#' shows but the mixed model does not is attributable to relatedness.
 #'
-#' @param mydf TODO: describe.
+#' @param mydf A list with elements \code{X_all}, \code{Y}, \code{Y_obs}
+#'   and \code{S}. The genetic relatedness matrix is not used.
 #'
-#' @return TODO: describe the return value.
+#' @return A named list holding the residuals, residual variance estimate and
+#'   \eqn{(X'X)^{-1}}, to be passed as \code{step1_pars} to
+#'   \code{\link{score_test_ObsG_lm_multiply}}.
 #' @export
 ObsG_typeIerror_step1_lm <- function(mydf) {
   
@@ -2669,13 +2701,17 @@ ObsG_typeIerror_step1_lm <- function(mydf) {
   return(ObsG_typeIerror_step1_pars)
 }
 
-#' unObsG_hatY_typeIerror_step1_lm
+#' Ordinary least squares null model for the synthetic phenotype
 #'
-#' TODO: one line describing what unObsG_hatY_typeIerror_step1_lm() does.
+#' As \code{\link{ObsG_typeIerror_step1_lm}}, but fitted to the synthetic
+#' phenotype among the individuals with no measured target phenotype.
 #'
-#' @param mydf TODO: describe.
+#' @param mydf A list with elements \code{X_all}, \code{Y}, \code{Y_obs}
+#'   and \code{S}. The genetic relatedness matrix is not used.
 #'
-#' @return TODO: describe the return value.
+#' @return A named list holding the residuals, residual variance estimate and
+#'   \eqn{(X'X)^{-1}}, to be passed as \code{step1_pars} to
+#'   \code{\link{score_test_unObsG_hatY_lm_multiply}}.
 #' @export
 unObsG_hatY_typeIerror_step1_lm <- function(mydf) {
   
@@ -2727,14 +2763,18 @@ unObsG_hatY_typeIerror_step1_lm <- function(mydf) {
   return(unObsG_hatY_typeIerror_step1_pars)
 }
 
-#' score_test_ObsG_lm_multiply
+#' Ordinary least squares score test, measured individuals
 #'
-#' TODO: one line describing what score_test_ObsG_lm_multiply() does.
+#' Score test under ordinary linear regression, ignoring relatedness, for the
+#' measured target phenotype.
 #'
-#' @param g_matrix TODO: describe.
-#' @param step1_pars TODO: describe.
+#' @param g_matrix Numeric genotype matrix, individuals in rows and variants
+#'   in columns, over the full cohort.
+#' @param step1_pars The list returned by
+#'   \code{\link{ObsG_typeIerror_step1_lm}}.
 #'
-#' @return TODO: describe the return value.
+#' @return A named list with the score statistic, \eqn{-\log_{10}} p-value,
+#'   effect estimate and its variance, one entry per variant.
 #' @export
 score_test_ObsG_lm_multiply <- function(g_matrix, step1_pars) {
   
@@ -2774,14 +2814,18 @@ score_test_ObsG_lm_multiply <- function(g_matrix, step1_pars) {
   return(results)
 }
 
-#' score_test_unObsG_hatY_lm_multiply
+#' Ordinary least squares score test, synthetic phenotype
 #'
-#' TODO: one line describing what score_test_unObsG_hatY_lm_multiply() does.
+#' Score test under ordinary linear regression, ignoring relatedness, for the
+#' synthetic phenotype among individuals with no measured target phenotype.
 #'
-#' @param g_matrix TODO: describe.
-#' @param step1_pars TODO: describe.
+#' @param g_matrix Numeric genotype matrix, individuals in rows and variants
+#'   in columns, over the full cohort.
+#' @param step1_pars The list returned by
+#'   \code{\link{unObsG_hatY_typeIerror_step1_lm}}.
 #'
-#' @return TODO: describe the return value.
+#' @return A named list with the score statistic, \eqn{-\log_{10}} p-value,
+#'   effect estimate and its variance, one entry per variant.
 #' @export
 score_test_unObsG_hatY_lm_multiply <- function(g_matrix, step1_pars) {
   
@@ -2821,14 +2865,23 @@ score_test_unObsG_hatY_lm_multiply <- function(g_matrix, step1_pars) {
   return(results)
 }
 
-#' SynSurrG_eachG_step1
+#' SynPALM null model with the tested variant retained in the surrogate model
 #'
-#' TODO: one line describing what SynSurrG_eachG_step1() does.
+#' As \code{\link{SynSurrG_ablation_estimate}}, except that the variant under
+#' test is kept as a covariate when the synthetic phenotype is regressed on the
+#' covariates. This is the appropriate step 1 when the prediction model that
+#' generated the synthetic phenotype already contains that variant, so that the
+#' variance components are not contaminated by the signal being tested. Because
+#' step 1 then depends on the variant, it must be refitted for each one, which
+#' is far more costly than the shared-step-1 route.
 #'
-#' @param mydf TODO: describe.
-#' @param G TODO: describe.
+#' @param mydf A list with elements \code{X_all}, \code{Y}, \code{Y_obs},
+#'   \code{S} and \code{GRM}.
+#' @param G Numeric genotype vector for the single variant to be retained as a
+#'   covariate in the surrogate model.
 #'
-#' @return TODO: describe the return value.
+#' @return A named list of precomputed step-1 quantities, to be passed as
+#'   \code{step1_pars} to \code{\link{score_test_SynSurrG_single}}.
 #' @export
 SynSurrG_eachG_step1 <- function(mydf,G) {
   
@@ -3452,14 +3505,22 @@ SynSurr_ablation_estimate <- function(mydf,independent_indices) {
   return(SynSurr_ablation_est_pars)
 }
 
-#' Oracle_ablation_estimate
+#' Oracle null model on independent samples
 #'
-#' TODO: one line describing what Oracle_ablation_estimate() does.
+#' Step 1 for the oracle analysis, which uses the complete target phenotype
+#' that would be available if nobody were missing a measurement. Restricted to
+#' one individual per relatedness block, so the covariance is diagonal and no
+#' genetic relatedness matrix is needed. Provides the upper bound on power in
+#' the ablation comparisons.
 #'
-#' @param mydf TODO: describe.
-#' @param independent_indices TODO: describe.
+#' @param mydf A list with elements \code{X_all} (covariates, columns prefixed
+#'   "X."), \code{Y} (complete target phenotype), \code{Y_obs} and \code{S}.
+#' @param independent_indices Integer vector of row indices giving one
+#'   individual per relatedness block, as returned by sampling within the
+#'   output of \code{\link{find_blocks_vectorized}}.
 #'
-#' @return TODO: describe the return value.
+#' @return A named list of precomputed step-1 quantities, to be passed as
+#'   \code{step1_pars} to \code{\link{score_test_Oracle_multiply}}.
 #' @export
 Oracle_ablation_estimate <- function(mydf,independent_indices) {
   
@@ -3507,14 +3568,22 @@ Oracle_ablation_estimate <- function(mydf,independent_indices) {
   
 }
 
-#' Obs_ablation_estimate
+#' Observed-only null model on independent samples
 #'
-#' TODO: one line describing what Obs_ablation_estimate() does.
+#' Step 1 for the observed-only analysis, which discards the synthetic
+#' phenotype and uses just the individuals with a measured target phenotype.
+#' Restricted to one individual per relatedness block, so the covariance is
+#' diagonal and no genetic relatedness matrix is needed. Provides the baseline
+#' against which the power gain from the synthetic phenotype is measured.
 #'
-#' @param mydf TODO: describe.
-#' @param independent_indices TODO: describe.
+#' @param mydf A list with elements \code{X_all} (covariates, columns prefixed
+#'   "X."), \code{Y}, \code{Y_obs} (\code{NA} where unmeasured) and \code{S}.
+#' @param independent_indices Integer vector of row indices giving one
+#'   individual per relatedness block, as returned by sampling within the
+#'   output of \code{\link{find_blocks_vectorized}}.
 #'
-#' @return TODO: describe the return value.
+#' @return A named list of precomputed step-1 quantities, to be passed as
+#'   \code{step1_pars} to \code{\link{score_test_Obs_multiply}}.
 #' @export
 Obs_ablation_estimate <- function(mydf,independent_indices) {
   

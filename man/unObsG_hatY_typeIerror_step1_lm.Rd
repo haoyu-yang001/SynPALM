@@ -2,16 +2,20 @@
 % Please edit documentation in R/synpalm_functions.R
 \name{unObsG_hatY_typeIerror_step1_lm}
 \alias{unObsG_hatY_typeIerror_step1_lm}
-\title{unObsG_hatY_typeIerror_step1_lm}
+\title{Ordinary least squares null model for the synthetic phenotype}
 \usage{
 unObsG_hatY_typeIerror_step1_lm(mydf)
 }
 \arguments{
-\item{mydf}{TODO: describe.}
+\item{mydf}{A list with elements \code{X_all}, \code{Y}, \code{Y_obs}
+and \code{S}. The genetic relatedness matrix is not used.}
 }
 \value{
-TODO: describe the return value.
+A named list holding the residuals, residual variance estimate and
+  \eqn{(X'X)^{-1}}, to be passed as \code{step1_pars} to
+  \code{\link{score_test_unObsG_hatY_lm_multiply}}.
 }
 \description{
-TODO: one line describing what unObsG_hatY_typeIerror_step1_lm() does.
+As \code{\link{ObsG_typeIerror_step1_lm}}, but fitted to the synthetic
+phenotype among the individuals with no measured target phenotype.
 }

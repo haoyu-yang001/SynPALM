@@ -2,18 +2,27 @@
 % Please edit documentation in R/synpalm_functions.R
 \name{SynSurrG_eachG_step1}
 \alias{SynSurrG_eachG_step1}
-\title{SynSurrG_eachG_step1}
+\title{SynPALM null model with the tested variant retained in the surrogate model}
 \usage{
 SynSurrG_eachG_step1(mydf, G)
 }
 \arguments{
-\item{mydf}{TODO: describe.}
+\item{mydf}{A list with elements \code{X_all}, \code{Y}, \code{Y_obs},
+\code{S} and \code{GRM}.}
 
-\item{G}{TODO: describe.}
+\item{G}{Numeric genotype vector for the single variant to be retained as a
+covariate in the surrogate model.}
 }
 \value{
-TODO: describe the return value.
+A named list of precomputed step-1 quantities, to be passed as
+  \code{step1_pars} to \code{\link{score_test_SynSurrG_single}}.
 }
 \description{
-TODO: one line describing what SynSurrG_eachG_step1() does.
+As \code{\link{SynSurrG_ablation_estimate}}, except that the variant under
+test is kept as a covariate when the synthetic phenotype is regressed on the
+covariates. This is the appropriate step 1 when the prediction model that
+generated the synthetic phenotype already contains that variant, so that the
+variance components are not contaminated by the signal being tested. Because
+step 1 then depends on the variant, it must be refitted for each one, which
+is far more costly than the shared-step-1 route.
 }

@@ -2,16 +2,19 @@
 % Please edit documentation in R/synpalm_functions.R
 \name{reset_temp_dir}
 \alias{reset_temp_dir}
-\title{reset_temp_dir}
+\title{Clear and recreate a scratch directory}
 \usage{
 reset_temp_dir(dir)
 }
 \arguments{
-\item{dir}{TODO: describe.}
+\item{dir}{Character path to the directory to reset.}
 }
 \value{
-TODO: describe the return value.
+Called for its side effect on the file system; returns \code{NULL}
+  invisibly.
 }
 \description{
-TODO: one line describing what reset_temp_dir() does.
+Deletes \code{dir} and everything inside it if it exists, then creates it
+again as an empty directory. Used to give each job a clean temporary
+workspace before writing intermediate files.
 }

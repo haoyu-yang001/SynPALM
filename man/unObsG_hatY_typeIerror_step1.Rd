@@ -2,16 +2,21 @@
 % Please edit documentation in R/synpalm_functions.R
 \name{unObsG_hatY_typeIerror_step1}
 \alias{unObsG_hatY_typeIerror_step1}
-\title{unObsG_hatY_typeIerror_step1}
+\title{Null model for the synthetic phenotype among unmeasured individuals}
 \usage{
 unObsG_hatY_typeIerror_step1(mydf)
 }
 \arguments{
-\item{mydf}{TODO: describe.}
+\item{mydf}{A list with elements \code{X_all}, \code{Y}, \code{Y_obs},
+\code{S} and \code{GRM}; see \code{\link{ObsG_hatY_typeIerror_step1}}.}
 }
 \value{
-TODO: describe the return value.
+A named list of precomputed step-1 quantities, to be passed as
+  \code{step1_pars} to \code{\link{score_test_unObsG_hatY_multiply}}.
 }
 \description{
-TODO: one line describing what unObsG_hatY_typeIerror_step1() does.
+As \code{\link{ObsG_hatY_typeIerror_step1}}, but restricted to the
+individuals with no measured target phenotype. Fitting the two subsets
+separately makes it possible to check that the synthetic phenotype behaves
+the same way in both.
 }

@@ -2,18 +2,26 @@
 % Please edit documentation in R/synpalm_functions.R
 \name{Oracle_ablation_estimate}
 \alias{Oracle_ablation_estimate}
-\title{Oracle_ablation_estimate}
+\title{Oracle null model on independent samples}
 \usage{
 Oracle_ablation_estimate(mydf, independent_indices)
 }
 \arguments{
-\item{mydf}{TODO: describe.}
+\item{mydf}{A list with elements \code{X_all} (covariates, columns prefixed
+"X."), \code{Y} (complete target phenotype), \code{Y_obs} and \code{S}.}
 
-\item{independent_indices}{TODO: describe.}
+\item{independent_indices}{Integer vector of row indices giving one
+individual per relatedness block, as returned by sampling within the
+output of \code{\link{find_blocks_vectorized}}.}
 }
 \value{
-TODO: describe the return value.
+A named list of precomputed step-1 quantities, to be passed as
+  \code{step1_pars} to \code{\link{score_test_Oracle_multiply}}.
 }
 \description{
-TODO: one line describing what Oracle_ablation_estimate() does.
+Step 1 for the oracle analysis, which uses the complete target phenotype
+that would be available if nobody were missing a measurement. Restricted to
+one individual per relatedness block, so the covariance is diagonal and no
+genetic relatedness matrix is needed. Provides the upper bound on power in
+the ablation comparisons.
 }

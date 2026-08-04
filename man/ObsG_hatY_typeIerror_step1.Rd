@@ -2,16 +2,24 @@
 % Please edit documentation in R/synpalm_functions.R
 \name{ObsG_hatY_typeIerror_step1}
 \alias{ObsG_hatY_typeIerror_step1}
-\title{ObsG_hatY_typeIerror_step1}
+\title{Null model for the synthetic phenotype among measured individuals}
 \usage{
 ObsG_hatY_typeIerror_step1(mydf)
 }
 \arguments{
-\item{mydf}{TODO: describe.}
+\item{mydf}{A list with elements \code{X_all} (covariates for all
+individuals, columns prefixed "X."), \code{Y} (oracle target
+phenotype), \code{Y_obs} (measured target phenotype, \code{NA} where
+unmeasured), \code{S} (synthetic phenotype) and \code{GRM} (sparse
+genetic relatedness matrix).}
 }
 \value{
-TODO: describe the return value.
+A named list of precomputed step-1 quantities, to be passed as
+  \code{step1_pars} to \code{\link{score_test_ObsG_hatY_multiply}}.
 }
 \description{
-TODO: one line describing what ObsG_hatY_typeIerror_step1() does.
+Fits the linear mixed null model to the synthetic (predicted) phenotype,
+restricted to individuals who also have a measured target phenotype, and
+returns the quantities the corresponding score test reuses across variants.
+Used to check that the synthetic phenotype alone is well calibrated.
 }

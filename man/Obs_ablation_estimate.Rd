@@ -2,18 +2,26 @@
 % Please edit documentation in R/synpalm_functions.R
 \name{Obs_ablation_estimate}
 \alias{Obs_ablation_estimate}
-\title{Obs_ablation_estimate}
+\title{Observed-only null model on independent samples}
 \usage{
 Obs_ablation_estimate(mydf, independent_indices)
 }
 \arguments{
-\item{mydf}{TODO: describe.}
+\item{mydf}{A list with elements \code{X_all} (covariates, columns prefixed
+"X."), \code{Y}, \code{Y_obs} (\code{NA} where unmeasured) and \code{S}.}
 
-\item{independent_indices}{TODO: describe.}
+\item{independent_indices}{Integer vector of row indices giving one
+individual per relatedness block, as returned by sampling within the
+output of \code{\link{find_blocks_vectorized}}.}
 }
 \value{
-TODO: describe the return value.
+A named list of precomputed step-1 quantities, to be passed as
+  \code{step1_pars} to \code{\link{score_test_Obs_multiply}}.
 }
 \description{
-TODO: one line describing what Obs_ablation_estimate() does.
+Step 1 for the observed-only analysis, which discards the synthetic
+phenotype and uses just the individuals with a measured target phenotype.
+Restricted to one individual per relatedness block, so the covariance is
+diagonal and no genetic relatedness matrix is needed. Provides the baseline
+against which the power gain from the synthetic phenotype is measured.
 }

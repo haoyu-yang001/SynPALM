@@ -2,16 +2,22 @@
 % Please edit documentation in R/synpalm_functions.R
 \name{ObsG_typeIerror_step1_lm}
 \alias{ObsG_typeIerror_step1_lm}
-\title{ObsG_typeIerror_step1_lm}
+\title{Ordinary least squares null model for the measured target phenotype}
 \usage{
 ObsG_typeIerror_step1_lm(mydf)
 }
 \arguments{
-\item{mydf}{TODO: describe.}
+\item{mydf}{A list with elements \code{X_all}, \code{Y}, \code{Y_obs}
+and \code{S}. The genetic relatedness matrix is not used.}
 }
 \value{
-TODO: describe the return value.
+A named list holding the residuals, residual variance estimate and
+  \eqn{(X'X)^{-1}}, to be passed as \code{step1_pars} to
+  \code{\link{score_test_ObsG_lm_multiply}}.
 }
 \description{
-TODO: one line describing what ObsG_typeIerror_step1_lm() does.
+Fits the null model by ordinary least squares, ignoring relatedness, to the
+individuals with a measured target phenotype. Provides the reference
+against which the mixed-model analyses are compared: any inflation this
+shows but the mixed model does not is attributable to relatedness.
 }
