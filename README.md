@@ -1,5 +1,7 @@
 # SynPALM: Synthetic Phenotype Assisted Linear Mixed Models
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21782545.svg)](https://doi.org/10.5281/zenodo.21782545)
+
 `SynPALM` is a robust and computationally scalable statistical framework for
 proteome-wide GWAS in the presence of partially observed measurements.
 
@@ -314,7 +316,7 @@ Yang, H., Wang, R., Song, S., and Lin, X. Synthetic Phenotype Assisted Linear
 Mixed Models Improve Proteome-Wide Genetic Discovery in Incomplete Biobank Data.
 Under review at *Nature Communications* (manuscript NCOMMS-26-058511-T).
 
-A Zenodo DOI for the frozen release used during peer review will be added here.
+Archived release used during peer review: Zenodo, DOI [10.5281/zenodo.21782545](https://doi.org/10.5281/zenodo.21782545) (tag `v0.1.1`).
 
 Summary statistics are browsable at <https://syn-palm.genohub.org/>.
 NA
