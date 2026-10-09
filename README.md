@@ -172,7 +172,7 @@ the five random forests.
 
 | Argument | Type | Description |
 |---|---|---|
-| `protein` | named numeric vector | The measured protein, `NA` where unmeasured. Names are sample IDs. |
+| `protein` | named numeric vector | The measured protein. Names are sample IDs. It may list only the measured individuals; anyone absent or `NA` is unmeasured. |
 | `rf_features` | data frame, rownames = IDs | Candidate surrogates for the random forest (labs, vitals, questionnaire items, ...). As many columns as you like: within each fold the `n_top` (default 100) most correlated with the protein are kept. |
 | `rf_binary` | data frame, rownames = IDs | Optional 0/1 candidate surrogates (e.g. diagnosis categories), screened by a Wilcoxon test within each fold. |
 | `rf_fixed` | character | Columns of `rf_features` always given to the forest (e.g. age, sex), not screened. |
@@ -181,8 +181,9 @@ the five random forests.
 | `genotype` | `.bed` path or matrix | A PLINK `.bed` file (read with BEDMatrix; position and alleles come from the `.bim`), or any matrix-like object with sample IDs as rownames and variant IDs as colnames. |
 
 Inputs are aligned by sample ID, never by position. The analysis set is the
-individuals present in all of them; everyone in it must also be in the
-genotype data. The individuals are reordered internally so that every
+individuals present in `grm`, `covariates`, `rf_features` and `rf_binary`;
+everyone in it must also be in the genotype data. `protein` does not restrict
+it: the unmeasured individuals are exactly what the synthetic phenotype adds. The individuals are reordered internally so that every
 relatedness cluster is contiguous, which the block-wise algorithms need.
 
 ### One call

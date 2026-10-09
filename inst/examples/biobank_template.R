@@ -19,7 +19,7 @@ library(Matrix)
 library(data.table)
 
 ## --- paths (placeholders) --------------------------------------------------
-PROTEIN_FILE    <- "data/proteins.tsv"         # id + one column per protein, NA = unmeasured
+PROTEIN_FILE    <- "data/proteins.tsv"         # id + one column per protein; may list measured people only
 SURROGATE_FILE  <- "data/surrogates.tsv"       # id + candidate surrogates (labs, vitals, ...)
 DIAGNOSIS_FILE  <- "data/diagnoses.tsv"        # id + 0/1 indicators (optional; set NULL)
 COVARIATE_FILE  <- "data/covariates.tsv"       # id + age, sex, PCs, batch, ...
@@ -57,13 +57,17 @@ if (stage == "fit") {
   covariates  <- read_by_id(COVARIATE_FILE)
   grm         <- readRDS(GRM_FILE)
 
-  ## the analysis set: individuals present in every input, in GRM order
-  keep <- Reduce(intersect, list(names(protein), rownames(rf_features), rownames(covariates),
+  ## the analysis set: everyone in the GRM, surrogates and covariates (in GRM
+  ## order), measured or not. It is NOT restricted to the protein table, which
+  ## usually lists only the measured people: the unmeasured majority is what
+  ## the synthetic phenotype adds. Absent from the protein table = unmeasured.
+  keep <- Reduce(intersect, list(rownames(rf_features), rownames(covariates),
                                  if (!is.null(rf_binary)) rownames(rf_binary)))
   ids  <- rownames(grm)[rownames(grm) %in% keep]
   grm  <- grm[ids, ids]
+  protein <- setNames(protein[match(ids, names(protein))], ids)
   cat(this_protein, ": ", length(ids), " individuals, ",
-      sum(!is.na(protein[ids])), " with a measured protein\n", sep = "")
+      sum(!is.na(protein)), " with a measured protein\n", sep = "")
 
   folds <- synpalm_folds(grm, K = 5)
   pred  <- synpalm_predict(protein, rf_features, folds, rf_binary = rf_binary,

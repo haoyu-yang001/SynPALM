@@ -534,14 +534,16 @@ synpalm_scan <- function(null, genotype, variants = NULL, chunk_size = 200L, ver
 #' Builds relatedness-aware folds, predicts the protein with cross-fitted
 #' random forests, fits the null model and scans the genotypes.
 #'
-#' The analysis set is the individuals present in \code{grm}, \code{protein},
+#' The analysis set is the individuals present in \code{grm},
 #' \code{covariates}, \code{rf_features} (and \code{rf_binary} if given), in
 #' the row order of \code{grm}. Every one of them must also be present in the
-#' genotype data. Individuals without a measured protein contribute through
-#' the synthetic phenotype.
+#' genotype data. \code{protein} does not define the analysis set: it may hold
+#' only the measured individuals (as a biobank protein table usually does), and
+#' everyone in the analysis set who is absent from it, or \code{NA} in it,
+#' counts as unmeasured and contributes through the synthetic phenotype.
 #'
-#' @param protein Named numeric vector of the protein, \code{NA} where
-#'   unmeasured.
+#' @param protein Named numeric vector of the protein, named by sample ID.
+#'   Individuals that are \code{NA} or absent are unmeasured.
 #' @param covariates Data frame of LMM adjustment covariates, rownames = sample IDs.
 #' @param rf_features Data frame of random-forest predictors, rownames = sample IDs.
 #' @param grm Sparse GRM with sample IDs as dimnames.
@@ -571,14 +573,17 @@ synpalm_gwas <- function(protein, covariates, rf_features, grm, genotype,
                          num.trees = 300L, num.threads = 1L, verbose = TRUE) {
   grm <- .check_grm(grm)
   keep <- Reduce(intersect, Filter(Negate(is.null), list(
-    .ids_of(protein, "protein"), .ids_of(covariates, "covariates"),
-    .ids_of(rf_features, "rf_features"),
+    .ids_of(covariates, "covariates"), .ids_of(rf_features, "rf_features"),
     if (!is.null(rf_binary)) .ids_of(rf_binary, "rf_binary"))))
   ids <- rownames(grm)[rownames(grm) %in% keep]
   if (!length(ids)) stop("no individuals in common between grm and the inputs", call. = FALSE)
   grm <- grm[ids, ids]
+
+  ## the protein over the whole analysis set: absent = unmeasured
+  mp <- match(ids, .ids_of(protein, "protein"))
+  protein <- setNames(as.numeric(protein)[mp], ids)
   if (verbose) message(sprintf("analysis set: %d individuals, %d with a measured protein",
-                               length(ids), sum(!is.na(protein[match(ids, .ids_of(protein, "protein"))]))))
+                               length(ids), sum(!is.na(protein))))
 
   if (is.null(folds)) {
     folds <- synpalm_folds(grm, K = K)

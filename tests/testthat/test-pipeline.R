@@ -142,3 +142,15 @@ test_that("5-fold cross-fit: a fold's predictions never use its own phenotypes",
   expect_true(all(g$results$rho_oof == g$accuracy$rho[6]))
   expect_output(print(g), "5-fold cross-fitted")
 })
+
+test_that("individuals absent from protein are unmeasured, not dropped", {
+  d <- sim_cohort(n_fam = 300, n_snp = 3)
+  meas <- d$protein[!is.na(d$protein)]          # a biobank table: measured people only
+  a <- suppressWarnings(synpalm_gwas(d$protein, d$covariates, d$rf_features, d$grm, d$G,
+                                     rf_binary = d$rf_binary, num.trees = 30, verbose = FALSE))
+  b <- suppressWarnings(synpalm_gwas(meas, d$covariates, d$rf_features, d$grm, d$G,
+                                     rf_binary = d$rf_binary, num.trees = 30, verbose = FALSE))
+  expect_equal(length(b$null$ids), length(d$ids))
+  expect_equal(b$prediction$n_obs, length(meas))
+  expect_equal(a$results, b$results)
+})
