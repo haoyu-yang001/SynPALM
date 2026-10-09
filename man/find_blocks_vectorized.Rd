@@ -4,10 +4,13 @@
 \alias{find_blocks_vectorized}
 \title{Find Block Structures in a Sparse Matrix}
 \usage{
-find_blocks_vectorized(A)
+find_blocks_vectorized(A, threshold = 0)
 }
 \arguments{
 \item{A}{A sparse matrix (usually of class \code{dgCMatrix} or similar).}
+
+\item{threshold}{Numeric. Elements with absolute values smaller than this
+are treated as zero. Default is 0 (use every stored element).}
 }
 \value{
 A list where each element is an integer vector containing the
@@ -18,4 +21,9 @@ This function identifies independent block structures within a sparse matrix
 (typically a precision or covariance matrix). It uses a vectorized approach
 to determine the boundaries where the matrix can be partitioned into
 non-overlapping sub-matrices.
+}
+\details{
+Matrices in symmetric storage (e.g. \code{dsCMatrix}) are converted to
+general storage first, since \code{summary()} on them returns only one
+triangle.
 }

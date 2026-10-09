@@ -17,17 +17,21 @@
 ##
 ## Usage, from the package root:
 ##   source("tools/rebuild_from_funcs_v2.R")
+## To read funcs_v2.R from somewhere other than the Desktop:
+##   SYNPALM_FUNCS=/path/to/funcs_v2.R Rscript tools/rebuild_from_funcs_v2.R
 ## ---------------------------------------------------------------------------
 
-SRC <- path.expand("~/Desktop/funcs_v2.R")
+SRC <- path.expand(Sys.getenv("SYNPALM_FUNCS", "~/Desktop/funcs_v2.R"))
 OUT <- "R/synpalm_functions.R"
 
-stopifnot("funcs_v2.R not found on the Desktop" = file.exists(SRC))
+stopifnot("funcs_v2.R not found (set SYNPALM_FUNCS)" = file.exists(SRC))
 
-cand <- c("R/core_functions.R", "R/utils.R",
-          "tools/old_R_backup/core_functions.R", "tools/old_R_backup/utils.R")
+## Later files take precedence, so the current package file comes last: its
+## documentation is the most up to date.
+cand <- c("tools/old_R_backup/core_functions.R", "tools/old_R_backup/utils.R",
+          "R/core_functions.R", "R/utils.R", OUT)
 OLD_FILES <- cand[file.exists(cand)]
-OLD_FILES <- OLD_FILES[!duplicated(basename(OLD_FILES))]
+OLD_FILES <- OLD_FILES[!duplicated(basename(OLD_FILES), fromLast = TRUE)]
 cat("Reusing documentation from:\n")
 cat(paste0("  ", OLD_FILES, collapse = "\n"), "\n\n")
 
@@ -69,6 +73,9 @@ roxygen_above <- function(lines, start) {
   out
 }
 
+## Dot-prefixed helpers are internal: no Rd page, not exported.
+is_internal <- function(nm) startsWith(nm, ".")
+
 make_stub <- function(d) {
   c(paste0("#' ", d$name),
     "#'",
@@ -77,10 +84,12 @@ make_stub <- function(d) {
     if (length(d$args)) paste0("#' @param ", d$args, " TODO: describe.") else character(0),
     "#'",
     "#' @return TODO: describe the return value.",
-    "#' @export")
+    if (is_internal(d$name)) "#' @noRd" else "#' @export")
 }
 
-ensure_export <- function(rox) if (any(grepl("@export", rox))) rox else c(rox, "#' @export")
+ensure_export <- function(rox) {
+  if (any(grepl("@export|@noRd", rox))) rox else c(rox, "#' @export")
+}
 
 ## --- read both sides -------------------------------------------------------
 

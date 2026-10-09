@@ -1,18 +1,23 @@
 Package: SynPALM
 Title: Synthetic Phenotype Assisted Linear Mixed Models Improve
        Proteome-Wide Genetic Discovery in Incomplete Biobank Data
-Version: 0.1.0
+Version: 0.1.1.9000
 Authors@R: person("Haoyu", "Yang", email = "haoyuyang@hsph.harvard.edu", role = c("aut", "cre"))
 Description: A specialized statistical framework for enhancing GWAS power by leveraging 
     synthetic/surrogate phenotypes in the presence of missing target phenotypes 
     and genetic relatedness.
 License: MIT + file LICENSE
 Encoding: UTF-8
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3
 Imports: 
     Matrix,
     methods,
     parallel,
     stats,
     utils,
-    dplyr
+    dplyr,
+    ranger
+Suggests:
+    BEDMatrix,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3

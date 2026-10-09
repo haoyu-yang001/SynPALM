@@ -238,6 +238,420 @@ INT <- function(data, pheno, k = 0.375){
   return(data)
 }
 
+#' Read a SynPALM numerical-stability option
+#'
+#' Looks up \code{getOption("synsurrg.<name>")}, falling back to \code{default}
+#' when the option is unset or \code{NULL}.
+#'
+#' @param name Option name without the \code{"synsurrg."} prefix.
+#' @param default Value returned when the option is not set.
+#'
+#' @return The option value, or \code{default}.
+#' @noRd
+.ss_opt <- function(name, default) {
+  v <- getOption(paste0("synsurrg.", name), default)
+  if (is.null(v)) default else v
+}
+
+#' Number of cores used for block-wise inversion
+#'
+#' Uses \code{getOption("synsurrg.ncores")} if set, otherwise the
+#' \code{SLURM_CPUS_PER_TASK} environment variable, otherwise 2.
+#'
+#' @return A positive integer.
+#' @noRd
+.ss_cores <- function() {
+  v <- getOption("synsurrg.ncores", NULL)
+  if (!is.null(v) && is.finite(v) && v >= 1) return(as.integer(v))
+  x <- suppressWarnings(as.integer(Sys.getenv("SLURM_CPUS_PER_TASK")))
+  if (!is.na(x) && x >= 1L) return(x)
+  2L
+}
+
+#' Whether to print variance-component and block-inversion diagnostics
+#'
+#' @return \code{TRUE} unless \code{options(synsurrg.verbose = FALSE)}.
+#' @noRd
+.ss_verbose <- function() isTRUE(.ss_opt("verbose", TRUE))
+
+#' Whether non-PSD estimates should raise an error instead of being projected
+#'
+#' @return \code{TRUE} if \code{options(synsurrg.on_nonpsd = "stop")}.
+#' @noRd
+.ss_strict  <- function() identical(.ss_opt("on_nonpsd", "project"), "stop")
+
+#' Project a Symmetric 2x2 Matrix onto the PSD Cone
+#'
+#' Truncates negative eigenvalues of \code{[a, ab; ab, b]} to zero, applies a
+#' lower bound to the diagonal, and pulls the implied correlation just inside
+#' the unit circle so the result is strictly positive definite. All three steps
+#' are no-ops for a matrix that is already comfortably positive definite, so
+#' well-behaved estimates are returned unchanged. Non-finite entries are set to
+#' zero before projecting.
+#'
+#' @param a,b Diagonal entries.
+#' @param ab Off-diagonal entry.
+#' @param floor_diag Lower bound applied to the diagonal after the eigenvalue
+#'   projection (adding a non-negative diagonal preserves PSD).
+#' @param shrink Relative amount by which \code{|ab|} is kept below
+#'   \code{sqrt(a * b)}.
+#'
+#' @return A list with the projected entries \code{a}, \code{ab}, \code{b};
+#'   a logical \code{changed}; and the flags \code{truncated}, \code{floored}
+#'   and \code{shrunk} recording which step modified the matrix.
+#' @keywords internal
+#' @export
+psd_project_2x2 <- function(a, ab, b, floor_diag = 0, shrink = 1e-6) {
+  M   <- matrix(c(a, ab, ab, b), 2L, 2L)
+  bad <- !is.finite(M)
+  M[bad] <- 0
+  
+  e <- eigen(M, symmetric = TRUE)
+  truncated <- any(e$values < 0)
+  if (truncated) {
+    e$values[e$values < 0] <- 0
+    M <- e$vectors %*% diag(e$values, 2L) %*% t(e$vectors)
+  }
+  
+  floored <- any(diag(M) < floor_diag)
+  if (floored) diag(M) <- pmax(diag(M), floor_diag)
+  
+  lim      <- (1 - shrink) * sqrt(max(M[1, 1] * M[2, 2], 0))
+  shrunk   <- abs(M[1, 2]) > lim
+  if (shrunk) M[1, 2] <- M[2, 1] <- sign(M[1, 2]) * lim
+  
+  list(a = M[1, 1], ab = M[1, 2], b = M[2, 2],
+       changed = truncated || floored || shrunk || any(bad),
+       truncated = truncated, floored = floored, shrunk = shrunk)
+}
+
+#' Constrain Bivariate Variance Components to a Valid Covariance
+#'
+#' The Haseman-Elston moment estimators of the target (T) and synthetic (S)
+#' variance components are unconstrained. The joint covariance
+#' \eqn{G \otimes GRM + E \otimes I} is positive definite iff the genetic
+#' 2x2 matrix \eqn{G} is PSD and the residual 2x2 matrix \eqn{E} is PD, and
+#' flooring the six numbers one at a time does not guarantee that. This
+#' function projects \eqn{G} and \eqn{E} onto the PSD cone with
+#' \code{\link{psd_project_2x2}}, flooring the residual variances at
+#' \code{getOption("synsurrg.ridge_e", 0.01)} times the trait scale. This
+#' guarantees that \code{Sigma11}, \code{Sigma22} and the Schur complement
+#' \code{A} are all positive definite.
+#'
+#' With \code{options(synsurrg.on_nonpsd = "stop")} an error is raised instead
+#' of projecting.
+#'
+#' @param tau_T2,tau_TS,tau_S2 Raw genetic variance and covariance estimates.
+#' @param sigma_T2,sigma_TS,sigma_S2 Raw residual variance and covariance
+#'   estimates.
+#' @param var_T,var_S Mean squared residuals of the two traits, used to scale
+#'   the residual-variance floor.
+#' @param label Character label used in messages.
+#'
+#' @return A list with the six constrained components and \code{vc}, a list
+#'   holding the \code{raw} and \code{used} values, the projection flags, and
+#'   the implied genetic and residual correlations \code{rho_g}, \code{rho_e}.
+#' @keywords internal
+#' @export
+constrain_vc_bivariate <- function(tau_T2, tau_TS, tau_S2,
+                                   sigma_T2, sigma_TS, sigma_S2,
+                                   var_T = 1, var_S = 1, label = "") {
+  raw <- c(tau_T2 = tau_T2, tau_TS = tau_TS, tau_S2 = tau_S2,
+           sigma_T2 = sigma_T2, sigma_TS = sigma_TS, sigma_S2 = sigma_S2)
+  
+  eps   <- .ss_opt("ridge_e", 0.01)
+  scale <- mean(c(abs(var_T), abs(var_S)))
+  if (!is.finite(scale) || scale <= 0) scale <- 1
+  
+  g <- psd_project_2x2(tau_T2,   tau_TS,   tau_S2,   floor_diag = 0)
+  r <- psd_project_2x2(sigma_T2, sigma_TS, sigma_S2, floor_diag = eps * scale)
+  
+  ## "none": keep the raw estimates as the pre-2026-08-22 code did, flooring
+  ## only sigma_T2 at 0.01. The projections above are still computed so that
+  ## vc records whether they would have changed anything.
+  if (identical(.ss_opt("on_nonpsd", "project"), "none")) {
+    used <- raw
+    used[["sigma_T2"]] <- max(used[["sigma_T2"]], 0.01)
+    vc <- list(raw = raw, used = used, mode = "none",
+               projected_G = FALSE, projected_E = FALSE,
+               would_project_G = g$changed, would_project_E = r$changed,
+               detail_G = g[c("truncated", "floored", "shrunk")],
+               detail_E = r[c("truncated", "floored", "shrunk")],
+               rho_g = used[["tau_TS"]]   / sqrt(max(used[["tau_T2"]]   * used[["tau_S2"]],   .Machine$double.eps)),
+               rho_e = used[["sigma_TS"]] / sqrt(max(used[["sigma_T2"]] * used[["sigma_S2"]], .Machine$double.eps)),
+               label = label)
+    if (.ss_verbose() && (g$changed || r$changed))
+      message(sprintf("[%s] VC not PSD (G %s, E %s); kept unconstrained (on_nonpsd = \"none\")",
+                      label, if (g$changed) "invalid" else "ok",
+                      if (r$changed) "invalid" else "ok"))
+    return(list(tau_T2 = used[["tau_T2"]], tau_TS = used[["tau_TS"]], tau_S2 = used[["tau_S2"]],
+                sigma_T2 = used[["sigma_T2"]], sigma_TS = used[["sigma_TS"]],
+                sigma_S2 = used[["sigma_S2"]], vc = vc))
+  }
+  
+  used <- c(tau_T2 = g$a, tau_TS = g$ab, tau_S2 = g$b,
+            sigma_T2 = r$a, sigma_TS = r$ab, sigma_S2 = r$b)
+  
+  if ((g$changed || r$changed) && .ss_strict())
+    stop(sprintf("[%s] variance components not PSD (G %s, E %s): %s",
+                 label, if (g$changed) "adjusted" else "ok",
+                 if (r$changed) "adjusted" else "ok",
+                 paste(sprintf("%s=%+.4g", names(raw), raw), collapse = " ")),
+         call. = FALSE)
+  
+  vc <- list(raw = raw, used = used,
+             projected_G = g$changed, projected_E = r$changed,
+             detail_G = g[c("truncated", "floored", "shrunk")],
+             detail_E = r[c("truncated", "floored", "shrunk")],
+             rho_g = used[["tau_TS"]]   / sqrt(max(used[["tau_T2"]]   * used[["tau_S2"]],   .Machine$double.eps)),
+             rho_e = used[["sigma_TS"]] / sqrt(max(used[["sigma_T2"]] * used[["sigma_S2"]], .Machine$double.eps)),
+             label = label)
+  
+  if (.ss_verbose() && (g$changed || r$changed))
+    message(sprintf("[%s] VC projected onto PSD cone\n  raw : %s\n  used: %s\n  rho_g = %.3f, rho_e = %.3f",
+                    label,
+                    paste(sprintf("%s=%+.4g", names(raw),  raw),  collapse = " "),
+                    paste(sprintf("%s=%+.4g", names(used), used), collapse = " "),
+                    vc$rho_g, vc$rho_e))
+  
+  list(tau_T2 = used[["tau_T2"]], tau_TS = used[["tau_TS"]], tau_S2 = used[["tau_S2"]],
+       sigma_T2 = used[["sigma_T2"]], sigma_TS = used[["sigma_TS"]],
+       sigma_S2 = used[["sigma_S2"]], vc = vc)
+}
+
+#' Constrain Univariate Variance Components
+#'
+#' \eqn{\tau^2 GRM + \sigma^2 I} is positive definite iff \eqn{\tau^2 \ge 0}
+#' and \eqn{\sigma^2 > 0}, so a simple floor is the correct constraint here.
+#' \eqn{\sigma^2} is floored at \code{getOption("synsurrg.ridge_e", 0.01)}
+#' times \code{var_T}.
+#'
+#' @param tau2 Raw genetic variance estimate.
+#' @param sigma2 Raw residual variance estimate.
+#' @param var_T Mean squared residual of the trait, used to scale the floor.
+#' @param label Character label used in messages.
+#'
+#' @return A list with \code{tau2}, \code{sigma2} and \code{vc}, a list
+#'   holding the \code{raw} and \code{used} values and the flooring flags.
+#' @keywords internal
+#' @export
+constrain_vc_univariate <- function(tau2, sigma2, var_T = 1, label = "") {
+  raw <- c(tau_T2 = tau2, sigma_T2 = sigma2)
+  
+  eps   <- .ss_opt("ridge_e", 0.01)
+  scale <- abs(var_T)
+  if (!is.finite(scale) || scale <= 0) scale <- 1
+  
+  ## "none": pre-2026-08-22 behaviour, sigma2 floored at 0.01 and nothing else.
+  if (identical(.ss_opt("on_nonpsd", "project"), "none")) {
+    sigma2 <- max(sigma2, 0.01)
+    return(list(tau2 = tau2, sigma2 = sigma2,
+                vc = list(raw = raw, used = c(tau_T2 = tau2, sigma_T2 = sigma2), mode = "none",
+                          floored_tau = FALSE, floored_sigma = sigma2 != raw[["sigma_T2"]],
+                          label = label)))
+  }
+  
+  bad_tau   <- !is.finite(tau2)   || tau2   < 0
+  bad_sigma <- !is.finite(sigma2) || sigma2 < eps * scale
+  tau2   <- if (bad_tau)   0             else tau2
+  sigma2 <- if (bad_sigma) eps * scale   else sigma2
+  
+  if ((bad_tau || bad_sigma) && .ss_strict())
+    stop(sprintf("[%s] variance components out of range: %s", label,
+                 paste(sprintf("%s=%+.4g", names(raw), raw), collapse = " ")),
+         call. = FALSE)
+  
+  if (.ss_verbose() && (bad_tau || bad_sigma))
+    message(sprintf("[%s] VC floored: tau_T2 %+.4g -> %.4g, sigma_T2 %+.4g -> %.4g",
+                    label, raw[["tau_T2"]], tau2, raw[["sigma_T2"]], sigma2))
+  
+  list(tau2 = tau2, sigma2 = sigma2,
+       vc = list(raw = raw, used = c(tau_T2 = tau2, sigma_T2 = sigma2),
+                 floored_tau = bad_tau, floored_sigma = bad_sigma, label = label))
+}
+
+#' Greedily merge consecutive blocks up to a size limit
+#'
+#' @param blocks List of index vectors from \code{find_blocks_vectorized()}.
+#' @param threshold Merged blocks are kept strictly smaller than this size.
+#'
+#' @return A list of merged index vectors.
+#' @noRd
+.ss_merge_blocks <- function(blocks, threshold) {
+  if (!length(blocks)) stop(".ss_merge_blocks: empty block list")
+  merged <- list()
+  cur <- blocks[[1L]]
+  if (length(blocks) >= 2L) {          # 2:length(blocks) was c(2,1) when length==1
+    for (i in 2:length(blocks)) {
+      if (length(cur) + length(blocks[[i]]) < threshold) {
+        cur <- c(cur, blocks[[i]])
+      } else {
+        merged <- c(merged, list(cur))
+        cur <- blocks[[i]]
+      }
+    }
+  }
+  c(merged, list(cur))
+}
+
+#' Invert one block with escalating fallbacks
+#'
+#' Tries a Cholesky inverse, then Cholesky with an escalating ridge, then an
+#' eigenvalue-floored inverse.
+#'
+#' @param M Square block to invert.
+#' @param max_tries Number of Cholesky attempts (the first without a ridge).
+#' @param dense_max Blocks up to this size are inverted as dense matrices.
+#' @param diag_eigen_max Blocks up to this size get their smallest eigenvalue
+#'   computed for diagnostics.
+#'
+#' @return A list with the inverse \code{inv} and the diagnostics
+#'   \code{method}, \code{ridge}, \code{min_eig}, \code{n_floored},
+#'   \code{size}.
+#' @noRd
+.ss_invert_block <- function(M, max_tries = 6L, dense_max = 2500L,
+                             diag_eigen_max = 1500L) {
+  p <- nrow(M)
+  if (p == 0L) stop("empty block")
+  
+  ## Fast path for sparse blocks (2026-10-08): a sparse Cholesky keeps the
+  ## inverse as sparse as the relatedness structure allows. Converting a
+  ## merged block of unrelated families to dense made every inverse block
+  ## full, ~100x slower here and in every later product. Same numbers to
+  ## machine precision; anything that is not cleanly PD falls through to the
+  ## ridge / eigenvalue-floor path below.
+  if (is(M, "sparseMatrix")) {
+    Ms <- forceSymmetric((M + t(M)) / 2)
+    if (all(is.finite(Ms@x))) {
+      out <- tryCatch({
+        ch <- Cholesky(Ms, perm = TRUE, LDL = FALSE)
+        as(solve(ch, Diagonal(p)), "generalMatrix")
+      }, error = function(e) NULL, warning = function(w) NULL)
+      if (!is.null(out))
+        return(list(inv = out, method = "chol", ridge = 0, min_eig = NA_real_,
+                    n_floored = 0L, size = p))
+    }
+  }
+  
+  use_dense <- p <= dense_max
+  if (use_dense) {
+    M <- as.matrix(M)
+    M <- (M + t(M)) / 2                       # remove numerical asymmetry
+    if (!all(is.finite(M))) stop("block contains NA/NaN/Inf")
+    add_ridge <- function(r) M + diag(r, p)
+  } else {
+    M <- forceSymmetric(M)
+    if (!all(is.finite(M@x))) stop("block contains NA/NaN/Inf")
+    add_ridge <- function(r) M + Diagonal(p, r)
+  }
+  
+  sc <- mean(abs(diag(M)))
+  if (!is.finite(sc) || sc <= 0) sc <- 1
+  ridge0 <- 1e-8 * sc
+  
+  min_eig <- NA_real_
+  ridge   <- 0
+  for (k in seq_len(max_tries)) {
+    Mk  <- if (ridge > 0) add_ridge(ridge) else M
+    out <- tryCatch(chol2inv(chol(Mk)), error = function(e) NULL,
+                    warning = function(w) NULL)
+    if (!is.null(out))
+      return(list(inv = out, method = if (ridge > 0) "chol+ridge" else "chol",
+                  ridge = ridge, min_eig = min_eig, n_floored = 0L, size = p))
+    if (k == 1L && p <= diag_eigen_max)
+      min_eig <- tryCatch(min(eigen(as.matrix(M), symmetric = TRUE,
+                                    only.values = TRUE)$values),
+                          error = function(e) NA_real_)
+    ridge <- if (ridge == 0) ridge0 else ridge * 100
+  }
+  
+  e <- eigen(as.matrix(M), symmetric = TRUE)
+  lam_max <- max(e$values)
+  if (!is.finite(lam_max) || lam_max <= 0)
+    stop(sprintf("block unusable: largest eigenvalue = %.4g", lam_max))
+  flo <- 1e-8 * lam_max
+  nf  <- sum(e$values < flo)
+  lam <- pmax(e$values, flo)
+  list(inv = e$vectors %*% (t(e$vectors) / lam), method = "eigen-floor",
+       ridge = NA_real_, min_eig = min(e$values), n_floored = nf, size = p)
+}
+
+#' Invert a matrix block by block in parallel
+#'
+#' Inverts every block with \code{.ss_invert_block()}, reports failures and
+#' regularised blocks by block id, and assembles the block-diagonal inverse in
+#' the original index order.
+#'
+#' @param mat Square matrix to invert.
+#' @param merged_blocks List of index vectors partitioning \code{1:nrow(mat)}.
+#' @param label Character label used in messages.
+#'
+#' @return A sparse block-diagonal inverse with a \code{"block_diag"}
+#'   attribute summarising how each block was inverted.
+#' @noRd
+.ss_block_inverse <- function(mat, merged_blocks, label = "matrix") {
+  n    <- nrow(mat)
+  perm <- unlist(merged_blocks, use.names = FALSE)
+  if (length(perm) != n || anyDuplicated(perm) || !all(perm %in% seq_len(n)))
+    stop(sprintf("[%s] blocks do not partition 1:%d (%d indices, %d duplicated)",
+                 label, n, length(perm), sum(duplicated(perm))))
+  
+  ## mc.preschedule = FALSE: a worker killed by the OOM reaper then takes down
+  ## only its own block, not every block scheduled on that core.
+  res <- mclapply(seq_along(merged_blocks), function(i) {
+    blk <- merged_blocks[[i]]
+    tryCatch(.ss_invert_block(mat[blk, blk, drop = FALSE]),
+             error = function(e) structure(
+               list(i = i, size = length(blk), msg = conditionMessage(e)),
+               class = "ss_block_failure"))
+  }, mc.cores = .ss_cores(), mc.preschedule = FALSE)
+  
+  died   <- which(vapply(res, inherits, logical(1), "try-error"))
+  failed <- which(vapply(res, inherits, logical(1), "ss_block_failure"))
+  if (length(died) || length(failed)) {
+    for (i in died)
+      message(sprintf("[%s] block %d (n=%d) WORKER DIED (likely OOM/segfault): %s",
+                      label, i, length(merged_blocks[[i]]),
+                      conditionMessage(attr(res[[i]], "condition"))))
+    for (i in failed)
+      message(sprintf("[%s] block %d (n=%d) FAILED: %s",
+                      label, i, res[[i]]$size, res[[i]]$msg))
+    first <- if (length(failed))
+      sprintf("block %d (n=%d): %s", failed[1], res[[failed[1]]]$size, res[[failed[1]]]$msg)
+    else sprintf("block %d worker died", died[1])
+    stop(sprintf("[%s] %d of %d blocks could not be inverted; first failure -> %s",
+                 label, length(died) + length(failed), length(res), first))
+  }
+  
+  meth <- vapply(res, `[[`, character(1), "method")
+  bad  <- which(meth != "chol")
+  if (length(bad)) {
+    detail <- vapply(bad, function(i) sprintf(
+      "  [%s] block %d (n=%d): %s | ridge=%.3g | min eigenvalue=%.4g | %d eigenvalue(s) floored",
+      label, i, res[[i]]$size, res[[i]]$method, res[[i]]$ridge,
+      res[[i]]$min_eig, res[[i]]$n_floored), character(1))
+    hdr <- sprintf("[%s] %d of %d blocks were not positive definite",
+                   label, length(bad), length(res))
+    if (.ss_strict()) stop(paste(c(hdr, detail), collapse = "\n"), call. = FALSE)
+    warning(hdr, " and were regularised", call. = FALSE)
+    if (.ss_verbose()) for (d in detail) message(d)
+  }
+  
+  out <- bdiag(lapply(res, `[[`, "inv"))
+  if (is.unsorted(perm)) {            # bdiag orders by block, not by index
+    ip  <- order(perm)
+    out <- out[ip, ip, drop = FALSE]
+  }
+  attr(out, "block_diag") <- data.frame(
+    block = seq_along(res),
+    size = vapply(res, `[[`, numeric(1), "size"),
+    method = meth,
+    ridge = vapply(res, function(z) as.numeric(z$ridge), numeric(1)),
+    min_eig = vapply(res, function(z) as.numeric(z$min_eig), numeric(1)),
+    floored = vapply(res, function(z) as.numeric(z$n_floored), numeric(1)))
+  out
+}
+
 #' Find Block Structures in a Sparse Matrix
 #'
 #' This function identifies independent block structures within a sparse matrix
@@ -245,43 +659,50 @@ INT <- function(data, pheno, k = 0.375){
 #' to determine the boundaries where the matrix can be partitioned into
 #' non-overlapping sub-matrices.
 #'
+#' Matrices in symmetric storage (e.g. \code{dsCMatrix}) are converted to
+#' general storage first, since \code{summary()} on them returns only one
+#' triangle.
+#'
 #' @param A A sparse matrix (usually of class \code{dgCMatrix} or similar).
+#' @param threshold Numeric. Elements with absolute values smaller than this
+#'   are treated as zero. Default is 0 (use every stored element).
 #'
 #' @return A list where each element is an integer vector containing the
 #'   row/column indices for a specific block.
 #' @export
-find_blocks_vectorized <- function(A) {
+find_blocks_vectorized <- function(A, threshold = 0) {
   n <- nrow(A)
-  # 提取非零元素的三元组信息
+  ## summary() on a symmetric-storage Matrix (dsCMatrix) returns only ONE
+  ## triangle. With uplo == "L" every max_j would be <= i, the algorithm would
+  ## report n blocks of size 1, and the "block-wise inverse" would silently be
+  ## just the inverse of the diagonal. Force general storage first.
+  if (is(A, "symmetricMatrix")) A <- as(A, "generalMatrix")
   sm <- summary(A)
+  if (threshold > 0) sm <- sm[abs(sm$x) >= threshold, , drop = FALSE]
   
-  # 计算每一行的最大非零列索引（若某行全零，则为0）
-  max_j <- rep(0, n)
-  tmp <- tapply(sm$j, sm$i, max)
-  max_j[as.integer(names(tmp))] <- tmp
-  
-  # 对于全零行，将其设置为行号（表示该行只影响自身）
-  zero_rows <- which(max_j == 0)
-  if(length(zero_rows) > 0){
-    max_j[zero_rows] <- zero_rows
+  ## largest non-zero column index in each row (0 if the row is empty)
+  max_j <- rep(0L, n)
+  if (nrow(sm) > 0) {
+    tmp <- tapply(sm$j, sm$i, max)
+    max_j[as.integer(names(tmp))] <- as.integer(tmp)
   }
+  ## an empty row only affects itself
+  zero_rows <- which(max_j == 0)
+  if (length(zero_rows) > 0) max_j[zero_rows] <- zero_rows
   
-  # 使用 cummax() 计算每一行的“最远影响范围”
   cum_max <- cummax(max_j)
-  
-  # 找到所有满足行号等于 cummax 的位置，即 block 的边界
   block_boundaries <- which(seq_len(n) == cum_max)
+  if (!length(block_boundaries) || block_boundaries[length(block_boundaries)] != n)
+    block_boundaries <- unique(c(block_boundaries, n))
   
-  # 根据 block 边界划分 block
   blocks <- vector("list", length(block_boundaries))
-  start <- 1
+  start <- 1L
   for (i in seq_along(block_boundaries)) {
     end <- block_boundaries[i]
     blocks[[i]] <- start:end
-    start <- end + 1
+    start <- end + 1L
   }
-  
-  return(blocks)
+  blocks
 }
 
 #' Find Block Structures in a Sparse Matrix with a Threshold
@@ -299,40 +720,7 @@ find_blocks_vectorized <- function(A) {
 #'   row/column indices for a specific block.
 #' @export
 find_blocks_vectorized_threshold <- function(A, threshold = 0.005) {
-  n <- nrow(A)
-  # 提取非零元素的三元组信息，并仅保留绝对值大于等于阈值的元素
-  sm <- summary(A)
-  sm <- sm[abs(sm$x) >= threshold, ]
-  
-  # 计算每一行的最大非零列索引（若某行全零，则为0）
-  max_j <- rep(0, n)
-  if(nrow(sm) > 0) {
-    tmp <- tapply(sm$j, sm$i, max)
-    max_j[as.integer(names(tmp))] <- tmp
-  }
-  
-  # 对于全零行，将其设置为行号（表示该行仅与自身有关，不影响后续行）
-  zero_rows <- which(max_j == 0)
-  if (length(zero_rows) > 0) {
-    max_j[zero_rows] <- zero_rows
-  }
-  
-  # 计算每一行的“最远影响范围”
-  cum_max <- cummax(max_j)
-  
-  # 找到所有满足行号等于累计最大值的位置，作为 block 的边界
-  block_boundaries <- which(seq_len(n) == cum_max)
-  
-  # 根据 block 边界划分 block
-  blocks <- vector("list", length(block_boundaries))
-  start <- 1
-  for (i in seq_along(block_boundaries)) {
-    end <- block_boundaries[i]
-    blocks[[i]] <- start:end
-    start <- end + 1
-  }
-  
-  return(blocks)
+  find_blocks_vectorized(A, threshold = threshold)
 }
 
 #' Construct a Block Matrix from Four Quadrants
@@ -356,96 +744,74 @@ block_matrix <- function(tl, tr, bl, br) {
 #' This function performs an efficient inversion of a large sparse matrix by
 #' partitioning it into independent blocks. It merges smaller blocks to
 #' optimize parallel processing and uses Cholesky decomposition for
-#' numerical stability.
+#' numerical stability. A block that is not positive definite is regularised
+#' with an escalating ridge, then an eigenvalue-floored inverse, and reported
+#' by block id; see \code{\link{SynPALM-package}} for the controlling options.
 #'
 #' @param wait_matrix A large square matrix (typically a sparse \code{dgCMatrix}) to be inverted.
 #' @param threshold Integer. The maximum number of rows/columns for a merged block
 #'   to optimize memory and computation. Default is 1000.
+#' @param label Character label used in diagnostic messages.
 #'
-#' @return A sparse block-diagonal matrix representing the inverse of the input matrix.
+#' @return A sparse block-diagonal matrix representing the inverse of the input
+#'   matrix, with a \code{"block_diag"} attribute summarising how each block
+#'   was inverted.
 #' @export
 #' @import Matrix
 #' @import parallel
-matrix_inv_block <- function(wait_matrix,threshold = 1000){
-  blocks <- find_blocks_vectorized(wait_matrix)
-  merged_blocks <- list()
-  current_block <- blocks[[1]]
-  for (i in seq_along(blocks)[-1]) {   ## empty when there is a single block
-    if (length(current_block) + length(blocks[[i]]) < threshold) {
-      current_block <- c(current_block, blocks[[i]])
-    } else {
-      # Otherwise, add the current block to the merged list and start a new one.
-      merged_blocks <- c(merged_blocks, list(current_block))
-      current_block <- blocks[[i]]
-    }
-  }
-  # Append the last accumulated block
-  merged_blocks <- c(merged_blocks, list(current_block))
-  
-  ncores <- 2
-  block_inv_list <- mclapply(merged_blocks, function(block) {
-    subSigma <- wait_matrix[block, block]
-    chol_subSigma <- chol(subSigma)
-    chol2inv(chol_subSigma)
-  }, mc.cores = ncores)
-  
-  inv_wait_matrix <- bdiag(block_inv_list)
-  #cat("Completed block-wise inversion Sigma11 using parallel computation.\n")
-  return(inv_wait_matrix)
+matrix_inv_block <- function(wait_matrix, threshold = 1000, label = "Sigma") {
+  blocks        <- find_blocks_vectorized(wait_matrix)
+  merged_blocks <- .ss_merge_blocks(blocks, threshold)
+  .ss_block_inverse(wait_matrix, merged_blocks, label = label)
 }
 
 #' Invert a Relationship Matrix with Adaptive Block Detection
 #'
 #' This function performs block-wise inversion of a relationship matrix (A-matrix).
 #' It features an adaptive thresholding mechanism that increases the sparseness
-#' threshold until the maximum block size is manageable (<= 1000) for inversion.
+#' threshold until the maximum block size is manageable (<= \code{max_block}) for inversion.
 #'
 #' @param Amatrix A large square matrix (typically a sparse genetic relationship matrix).
 #' @param thr Numeric. The initial threshold for detecting independent blocks. Default is 0.006.
 #' @param threshold Integer. The maximum number of rows/columns for merged blocks
 #'   during parallel computation. Default is 1000.
+#' @param max_block Integer. \code{thr} is raised until no block is larger than
+#'   this. Defaults to \code{threshold}.
+#' @param thr_step Numeric. Increment applied to \code{thr} at each step.
+#' @param max_thr_iter Integer. Maximum number of increments before giving up
+#'   with a warning.
+#' @param label Character label used in diagnostic messages.
 #'
-#' @return A sparse block-diagonal matrix representing the inverse of the (possibly thresholded) input matrix.
+#' @return A sparse block-diagonal matrix representing the inverse of the
+#'   (possibly thresholded) input matrix, with a \code{"block_diag"} attribute
+#'   summarising how each block was inverted.
 #' @export
 #' @import Matrix
 #' @import parallel
-matrix_inv_Amatrix <- function(Amatrix,thr=0.006,threshold=1000){
-  blocks_A <- find_blocks_vectorized_threshold(Amatrix,threshold = thr) #set the thr for block detaction
-  ja <- max(sapply(blocks_A, length))
-  while(ja > 1000){
-    thr <- thr + 0.001
-    blocks_A <- find_blocks_vectorized_threshold(Amatrix,threshold = thr) #set the thr for block detaction
-    ja <- max(sapply(blocks_A, length))
-  }
-  
-  merged_blocks <- list()
-  current_block <- blocks_A[[1]]
-  if(length(blocks_A) > 1 ){
-    for (i in 2:length(blocks_A)) {
-      if (length(current_block) + length(blocks_A[[i]]) < threshold) {
-        current_block <- c(current_block, blocks_A[[i]])
-      } else {
-        # Otherwise, add the current block to the merged list and start a new one.
-        merged_blocks <- c(merged_blocks, list(current_block))
-        current_block <- blocks_A[[i]]
-      }
+matrix_inv_Amatrix <- function(Amatrix, thr = 0.006, threshold = 1000,
+                               max_block = threshold, thr_step = 0.001,
+                               max_thr_iter = 200L, label = "A") {
+  it <- 0L
+  repeat {
+    blocks_A <- find_blocks_vectorized_threshold(Amatrix, threshold = thr)
+    if (!length(blocks_A))
+      stop(sprintf("[%s] no blocks found at thr = %.4g", label, thr))
+    ja <- max(lengths(blocks_A))
+    if (ja <= max_block) break
+    it <- it + 1L
+    if (it > max_thr_iter) {           # the old while() loop had no exit guard
+      warning(sprintf("[%s] gave up thresholding at thr = %.4g; largest block still %d",
+                      label, thr, ja), call. = FALSE)
+      break
     }
+    thr <- thr + thr_step
   }
-  # Append the last accumulated block
-  merged_blocks <- c(merged_blocks, list(current_block))
-  #sapply(merged_blocks, length)
+  if (.ss_verbose() && it > 0L)
+    message(sprintf("[%s] thr raised to %.4g in %d step(s): %d blocks, largest = %d",
+                    label, thr, it, length(blocks_A), ja))
   
-  ncores <- 2
-  block_inv_list <- mclapply(merged_blocks, function(block) {
-    subA <- Amatrix[block, block]
-    #chol_subA <- chol(subA + diag(1e-5, nrow(subA)))
-    #chol2inv(chol_subA)
-    solve(subA)
-  }, mc.cores = ncores)
-  
-  V11 <- bdiag(block_inv_list)
-  #cat("Completed V11 block-wise inversion using parallel computation.\n")
-  return(V11)
+  merged_blocks <- .ss_merge_blocks(blocks_A, threshold)
+  .ss_block_inverse(Amatrix, merged_blocks, label = label)
 }
 
 #' Compute Score Test Statistic and P-value
@@ -1343,7 +1709,7 @@ score_test_OracleG_single <- function(G_all,step1_pars) {
   
   results$hat_beta_OracleG <- hat_beta
   results$var_hat_beta_OracleG <- var_hat_beta
-
+  
   return(results)
 }
 
@@ -2013,30 +2379,51 @@ SynSurrG_typeIerror_step1 <- function(mydf) {
   )
   
   model_lm1 <- lm(y ~ x, data = reml_data_SynSurrG)
-  model_lm2 <- lm(haty ~ x, data = lm_data_SynSurrG)
+  model_lm2 <- lm(haty ~ x, data = lm_data_SynSurrG, na.action = na.exclude)
+  
+  ## residuals aligned to their index sets. na.action = na.exclude keeps the NA
+  ## padding, so res_S[obs_protein_index] refers to the right individuals even
+  ## if lm() dropped rows; the old code indexed a shortened residual vector by
+  ## position, which silently misaligns whenever a covariate has an NA.
+  res_T <- as.numeric(model_lm1$residuals)
+  res_S <- as.numeric(residuals(model_lm2))
+  if (length(res_T) != n_obs)
+    stop("SynSurrG_typeIerror_step1: lm1 residual length ", length(res_T), " != n_obs ", n_obs,
+         " -- NA in covariates or surrogate at observed individuals")
+  if (length(res_S) != n)
+    stop("SynSurrG_typeIerror_step1: lm2 residual length ", length(res_S), " != n ", n)
   
   GRM_o <- GRM_obs_obs
   diag(GRM_o) <- 0
   GRM_oall <- GRM
   diag(GRM_oall) <- 0
   
-  a1 <- as.numeric(t(model_lm1$residuals) %*% GRM_o %*% model_lm1$residuals)
+  a1 <- as.numeric(t(res_T) %*% GRM_o %*% res_T)
   hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm1$residuals * model_lm1$residuals)
+  a2 <- sum(res_T * res_T)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
   
-  a1 <- as.numeric(t(model_lm2$residuals) %*% GRM_oall %*% model_lm2$residuals)
+  a1 <- as.numeric(t(res_S) %*% GRM_oall %*% res_S)
   hat_tau_S2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm2$residuals * model_lm2$residuals)
+  a2 <- sum(res_S * res_S)
   hat_sigma_S2 <- (a2 - hat_tau_S2 * sum(diag(GRM)))/nrow(GRM)
   
-  a1 <- as.numeric(t(model_lm2$residuals[obs_protein_index]) %*% GRM_o %*% model_lm1$residuals)
+  a1 <- as.numeric(t(res_S[obs_protein_index]) %*% GRM_o %*% res_T)
   hat_tau_TS <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm2$residuals[obs_protein_index] * model_lm1$residuals)
+  a2 <- sum(res_S[obs_protein_index] * res_T)
   hat_sigma_TS <- (a2 - hat_tau_TS * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
+  
+  ## --- constrain the variance components onto the PSD cone (see header) ---
+  .vc <- constrain_vc_bivariate(hat_tau_T2, hat_tau_TS, hat_tau_S2,
+                                hat_sigma_T2, hat_sigma_TS, hat_sigma_S2,
+                                var_T = mean(res_T^2), var_S = mean(res_S^2),
+                                label = "SynSurrG_typeIerror_step1")
+  hat_tau_T2   <- .vc$tau_T2;   hat_tau_TS   <- .vc$tau_TS;   hat_tau_S2   <- .vc$tau_S2
+  hat_sigma_T2 <- .vc$sigma_T2; hat_sigma_TS <- .vc$sigma_TS; hat_sigma_S2 <- .vc$sigma_S2
+  vc <- .vc$vc
   
   
   # obtain Σ11: n_obs × n_obs
@@ -2045,7 +2432,7 @@ SynSurrG_typeIerror_step1 <- function(mydf) {
   # obtain Σ12: n_obs × n
   I_values <- rep(hat_sigma_TS, min(n_obs, n))
   I_matrix <- sparseMatrix(
-    i = 1:min(n_obs, n),j = 1:min(n_obs, n),
+    i = seq_len(n_obs), j = obs_protein_index,
     x = I_values,dims = c(n_obs, n)
   )
   Sigma12 <- hat_tau_TS * GRM_obs_full + I_matrix
@@ -2054,7 +2441,9 @@ SynSurrG_typeIerror_step1 <- function(mydf) {
   Sigma22 <- hat_tau_S2 * GRM + hat_sigma_S2 * Diagonal(n)
   
   # 计算 Σ11^{-1}
-  inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
+  ## inv_Sigma11 is never used downstream (it is not in `params`): dropping it
+  ## saves one full block-wise inversion per protein and removes a crash site.
+  ## inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
   
   # obtain Σ22^{-1} block wise inverse 
   inv_Sigma22 <- matrix_inv_block(wait_matrix=Sigma22)
@@ -2100,7 +2489,8 @@ SynSurrG_typeIerror_step1 <- function(mydf) {
     "A22", "Atb", "B1", "B_mat", 
     "B2_1", "B2", "bt2", "Btt1",
     "inv_Sigma22", "Sigma11",
-    "Sigma12_Sigma22inv", "Sigma12"
+    "Sigma12_Sigma22inv", "Sigma12",
+    "vc"
   )
   
   SynSurrG_typeIerror_step1_pars <- mget(params, envir = environment())
@@ -2148,13 +2538,13 @@ SynSurrG_ablation_estimate <- function(mydf) {
   reml_data_SynSurrG <- data.frame(
     y = test_df$Y_obs,
     haty = test_df$yhat,
-    x = test_df[, grepl("^X\\.", names(test_df))]
+    x = test_df[, grepl("^X\\.", names(test_df)), drop = FALSE]
   )%>% na.omit()
   
   lm_data_SynSurrG <- data.frame(
     y = test_df$Y_obs,
     haty = test_df$yhat,
-    x = test_df[, grepl("^X\\.", names(test_df))]
+    x = test_df[, grepl("^X\\.", names(test_df)), drop = FALSE]
   )
   
   preds <- grep("^x\\.X\\.", names(reml_data_SynSurrG), value = TRUE)
@@ -2164,30 +2554,51 @@ SynSurrG_ablation_estimate <- function(mydf) {
   
   preds <- grep("^x\\.X\\.", names(lm_data_SynSurrG), value = TRUE)
   fml <- reformulate(preds, response = "haty")
-  model_lm2 <- lm(fml, data = lm_data_SynSurrG)
+  model_lm2 <- lm(fml, data = lm_data_SynSurrG, na.action = na.exclude)
+  
+  ## residuals aligned to their index sets. na.action = na.exclude keeps the NA
+  ## padding, so res_S[obs_protein_index] refers to the right individuals even
+  ## if lm() dropped rows; the old code indexed a shortened residual vector by
+  ## position, which silently misaligns whenever a covariate has an NA.
+  res_T <- as.numeric(model_lm1$residuals)
+  res_S <- as.numeric(residuals(model_lm2))
+  if (length(res_T) != n_obs)
+    stop("SynSurrG_ablation_estimate: lm1 residual length ", length(res_T), " != n_obs ", n_obs,
+         " -- NA in covariates or surrogate at observed individuals")
+  if (length(res_S) != n)
+    stop("SynSurrG_ablation_estimate: lm2 residual length ", length(res_S), " != n ", n)
   
   GRM_o <- GRM_obs_obs
   diag(GRM_o) <- 0
   GRM_oall <- GRM
   diag(GRM_oall) <- 0
   
-  a1 <- as.numeric(t(model_lm1$residuals) %*% GRM_o %*% model_lm1$residuals)
+  a1 <- as.numeric(t(res_T) %*% GRM_o %*% res_T)
   hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm1$residuals * model_lm1$residuals)
-  hat_sigma_T2 <- max((a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs),0.01)
+  a2 <- sum(res_T * res_T)
+  hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
   
-  a1 <- as.numeric(t(model_lm2$residuals) %*% GRM_oall %*% model_lm2$residuals)
+  a1 <- as.numeric(t(res_S) %*% GRM_oall %*% res_S)
   hat_tau_S2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm2$residuals * model_lm2$residuals)
+  a2 <- sum(res_S * res_S)
   hat_sigma_S2 <- (a2 - hat_tau_S2 * sum(diag(GRM)))/nrow(GRM)
   
-  a1 <- as.numeric(t(model_lm2$residuals[obs_protein_index]) %*% GRM_o %*% model_lm1$residuals)
+  a1 <- as.numeric(t(res_S[obs_protein_index]) %*% GRM_o %*% res_T)
   hat_tau_TS <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm2$residuals[obs_protein_index] * model_lm1$residuals)
+  a2 <- sum(res_S[obs_protein_index] * res_T)
   hat_sigma_TS <- (a2 - hat_tau_TS * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
+  
+  ## --- constrain the variance components onto the PSD cone (see header) ---
+  .vc <- constrain_vc_bivariate(hat_tau_T2, hat_tau_TS, hat_tau_S2,
+                                hat_sigma_T2, hat_sigma_TS, hat_sigma_S2,
+                                var_T = mean(res_T^2), var_S = mean(res_S^2),
+                                label = "SynSurrG_ablation_estimate")
+  hat_tau_T2   <- .vc$tau_T2;   hat_tau_TS   <- .vc$tau_TS;   hat_tau_S2   <- .vc$tau_S2
+  hat_sigma_T2 <- .vc$sigma_T2; hat_sigma_TS <- .vc$sigma_TS; hat_sigma_S2 <- .vc$sigma_S2
+  vc <- .vc$vc
   
   
   # obtain Σ11: n_obs × n_obs
@@ -2196,7 +2607,7 @@ SynSurrG_ablation_estimate <- function(mydf) {
   # obtain Σ12: n_obs × n
   I_values <- rep(hat_sigma_TS, min(n_obs, n))
   I_matrix <- sparseMatrix(
-    i = 1:min(n_obs, n),j = 1:min(n_obs, n),
+    i = seq_len(n_obs), j = obs_protein_index,
     x = I_values,dims = c(n_obs, n)
   )
   Sigma12 <- hat_tau_TS * GRM_obs_full + I_matrix
@@ -2205,7 +2616,9 @@ SynSurrG_ablation_estimate <- function(mydf) {
   Sigma22 <- hat_tau_S2 * GRM + hat_sigma_S2 * Diagonal(n)
   
   # 计算 Σ11^{-1}
-  inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
+  ## inv_Sigma11 is never used downstream (it is not in `params`): dropping it
+  ## saves one full block-wise inversion per protein and removes a crash site.
+  ## inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
   
   # obtain Σ22^{-1} block wise inverse 
   inv_Sigma22 <- matrix_inv_block(wait_matrix=Sigma22)
@@ -2225,7 +2638,7 @@ SynSurrG_ablation_estimate <- function(mydf) {
   Y <- test_df$Y_obs[obs_protein_index]
   hatY <- test_df$yhat
   
-  X_all <- data.frame(intercept = rep(1,n),test_df[, grepl("^X\\.", names(test_df))])
+  X_all <- data.frame(intercept = rep(1,n),test_df[, grepl("^X\\.", names(test_df)), drop = FALSE])
   X_obs <- X_all[obs_protein_index,]
   
   X_obs <- as.matrix(X_obs)
@@ -2251,7 +2664,8 @@ SynSurrG_ablation_estimate <- function(mydf) {
     "A22", "Atb", "B1", "B_mat",
     "B2_1", "B2", "bt2", "Btt1",
     "inv_Sigma22", "Sigma11",
-    "Sigma12_Sigma22inv", "Sigma12"
+    "Sigma12_Sigma22inv", "Sigma12",
+    "vc"
   )
   
   SynSurrG_ablation_est_pars <- mget(params, envir = environment())
@@ -2318,6 +2732,13 @@ OracleG_typeIerror_step1 <- function(mydf) {
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM)))/nrow(GRM)
   
+  ## --- constrain the variance components (see header) --------------------
+  ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
+  .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
+                                 var_T = mean(model_lm$residuals^2), label = "OracleG_typeIerror_step1")
+  hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
+  vc <- .vc$vc
+  
   Sigma11 <- hat_tau_T2 * GRM + hat_sigma_T2 * Diagonal(n)
   
   inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
@@ -2334,7 +2755,8 @@ OracleG_typeIerror_step1 <- function(mydf) {
   invS11_res <- inv_Sigma11 %*% residual
   
   params <- c(
-    "invS11_res","SX","inv_Sigma11","XtSX_inv","X"
+    "invS11_res","SX","inv_Sigma11","XtSX_inv","X",
+    "vc"
   )
   
   OracleG_typeIerror_step1_pars <- mget(params, envir = environment())
@@ -2381,7 +2803,7 @@ OracleG_ablation_estimate <- function(mydf) {
   
   reml_data_oracle <- data.frame(
     y = test_df$Y_all,
-    x = test_df[, grepl("^X\\.", names(test_df))]
+    x = test_df[, grepl("^X\\.", names(test_df)), drop = FALSE]
   )
   
   preds <- grep("^x\\.X\\.", names(reml_data_oracle), value = TRUE)
@@ -2396,7 +2818,14 @@ OracleG_ablation_estimate <- function(mydf) {
   hat_tau_T2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(model_lm$residuals * model_lm$residuals)
-  hat_sigma_T2 <- max((a2 - hat_tau_T2 * sum(diag(GRM)))/nrow(GRM),0.01)
+  hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM)))/nrow(GRM)
+  
+  ## --- constrain the variance components (see header) --------------------
+  ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
+  .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
+                                 var_T = mean(model_lm$residuals^2), label = "OracleG_ablation_estimate")
+  hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
+  vc <- .vc$vc
   
   Sigma11 <- hat_tau_T2 * GRM + hat_sigma_T2 * Diagonal(n)
   
@@ -2405,7 +2834,7 @@ OracleG_ablation_estimate <- function(mydf) {
   
   ## for obs or oracle test statistic X needs to include the intercept!
   Y <- reml_data_oracle$y
-  X <- as.matrix(cbind(rep(1,n),test_df[, grepl("^X\\.", names(test_df))]))
+  X <- as.matrix(cbind(rep(1,n),test_df[, grepl("^X\\.", names(test_df)), drop = FALSE]))
   
   SX <- inv_Sigma11 %*% X
   XtSX_inv <- solve(crossprod(X, SX))
@@ -2414,7 +2843,8 @@ OracleG_ablation_estimate <- function(mydf) {
   invS11_res <- inv_Sigma11 %*% residual
   
   params <- c(
-    "invS11_res","SX","inv_Sigma11","XtSX_inv","X"
+    "invS11_res","SX","inv_Sigma11","XtSX_inv","X",
+    "vc"
   )
   
   OracleG_ablation_est_pars <- mget(params, envir = environment())
@@ -2480,6 +2910,13 @@ ObsG_typeIerror_step1 <- function(mydf) {
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
   
+  ## --- constrain the variance components (see header) --------------------
+  ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
+  .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
+                                 var_T = mean(model_lm$residuals^2), label = "ObsG_typeIerror_step1")
+  hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
+  vc <- .vc$vc
+  
   Sigma11 <- hat_tau_T2 * GRM_obs_obs + hat_sigma_T2 * Diagonal(n_obs)
   inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
   
@@ -2494,7 +2931,8 @@ ObsG_typeIerror_step1 <- function(mydf) {
   invS11_res <- inv_Sigma11 %*% residual
   
   params <- c(
-    "obs_protein_index","invS11_res","SX","inv_Sigma11","XtSX_inv","X"
+    "obs_protein_index","invS11_res","SX","inv_Sigma11","XtSX_inv","X",
+    "vc"
   )
   
   ObsG_typeIerror_step1_pars <- mget(params, envir = environment())
@@ -2547,6 +2985,13 @@ ObsG_hatY_typeIerror_step1 <- function(mydf) {
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
   
+  ## --- constrain the variance components (see header) --------------------
+  ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
+  .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
+                                 var_T = mean(model_lm$residuals^2), label = "ObsG_hatY_typeIerror_step1")
+  hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
+  vc <- .vc$vc
+  
   Sigma11 <- hat_tau_T2 * GRM_obs_obs + hat_sigma_T2 * Diagonal(n_obs)
   inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
   
@@ -2561,7 +3006,8 @@ ObsG_hatY_typeIerror_step1 <- function(mydf) {
   invS11_res <- inv_Sigma11 %*% residual
   
   params <- c(
-    "obs_protein_index","invS11_res","SX","inv_Sigma11","XtSX_inv","X"
+    "obs_protein_index","invS11_res","SX","inv_Sigma11","XtSX_inv","X",
+    "vc"
   )
   
   ObsG_hatY_typeIerror_step1_pars <- mget(params, envir = environment())
@@ -2611,6 +3057,13 @@ unObsG_hatY_typeIerror_step1 <- function(mydf) {
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_unobs_unobs)))/nrow(GRM_unobs_unobs)
   
+  ## --- constrain the variance components (see header) --------------------
+  ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
+  .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
+                                 var_T = mean(model_lm$residuals^2), label = "unObsG_hatY_typeIerror_step1")
+  hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
+  vc <- .vc$vc
+  
   Sigma11 <- hat_tau_T2 * GRM_unobs_unobs + hat_sigma_T2 * Diagonal(n_unobs)
   inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
   
@@ -2625,7 +3078,8 @@ unObsG_hatY_typeIerror_step1 <- function(mydf) {
   invS11_res <- inv_Sigma11 %*% residual
   
   params <- c(
-    "unobs_protein_index","invS11_res","SX","inv_Sigma11","XtSX_inv","X"
+    "unobs_protein_index","invS11_res","SX","inv_Sigma11","XtSX_inv","X",
+    "vc"
   )
   
   unObsG_hatY_typeIerror_step1_pars <- mget(params, envir = environment())
@@ -2908,13 +3362,13 @@ SynSurrG_eachG_step1 <- function(mydf,G) {
   reml_data_SynSurrG <- data.frame(
     y = test_df$Y_obs,
     haty = test_df$yhat,
-    x = test_df[, grepl("^X\\.", names(test_df))]
+    x = test_df[, grepl("^X\\.", names(test_df)), drop = FALSE]
   )%>% na.omit()
   
   lm_data_SynSurrG <- data.frame(
     y = test_df$Y_obs,
     haty = test_df$yhat,
-    x = test_df[, grepl("^X\\.", names(test_df))],
+    x = test_df[, grepl("^X\\.", names(test_df)), drop = FALSE],
     G = test_df$G
   )
   
@@ -2924,30 +3378,51 @@ SynSurrG_eachG_step1 <- function(mydf,G) {
   
   preds <- c(grep("^x\\.X\\.", names(lm_data_SynSurrG), value = TRUE),"G")
   fml <- reformulate(preds, response = "haty")
-  model_lm2 <- lm(fml, data = lm_data_SynSurrG)
+  model_lm2 <- lm(fml, data = lm_data_SynSurrG, na.action = na.exclude)
+  
+  ## residuals aligned to their index sets. na.action = na.exclude keeps the NA
+  ## padding, so res_S[obs_protein_index] refers to the right individuals even
+  ## if lm() dropped rows; the old code indexed a shortened residual vector by
+  ## position, which silently misaligns whenever a covariate has an NA.
+  res_T <- as.numeric(model_lm1$residuals)
+  res_S <- as.numeric(residuals(model_lm2))
+  if (length(res_T) != n_obs)
+    stop("SynSurrG_eachG_step1: lm1 residual length ", length(res_T), " != n_obs ", n_obs,
+         " -- NA in covariates or surrogate at observed individuals")
+  if (length(res_S) != n)
+    stop("SynSurrG_eachG_step1: lm2 residual length ", length(res_S), " != n ", n)
   
   GRM_o <- GRM_obs_obs
   diag(GRM_o) <- 0
   GRM_oall <- GRM
   diag(GRM_oall) <- 0
   
-  a1 <- as.numeric(t(model_lm1$residuals) %*% GRM_o %*% model_lm1$residuals)
+  a1 <- as.numeric(t(res_T) %*% GRM_o %*% res_T)
   hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm1$residuals * model_lm1$residuals)
+  a2 <- sum(res_T * res_T)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
   
-  a1 <- as.numeric(t(model_lm2$residuals) %*% GRM_oall %*% model_lm2$residuals)
+  a1 <- as.numeric(t(res_S) %*% GRM_oall %*% res_S)
   hat_tau_S2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm2$residuals * model_lm2$residuals)
+  a2 <- sum(res_S * res_S)
   hat_sigma_S2 <- (a2 - hat_tau_S2 * sum(diag(GRM)))/nrow(GRM)
   
-  a1 <- as.numeric(t(model_lm2$residuals[obs_protein_index]) %*% GRM_o %*% model_lm1$residuals)
+  a1 <- as.numeric(t(res_S[obs_protein_index]) %*% GRM_o %*% res_T)
   hat_tau_TS <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm2$residuals[obs_protein_index] * model_lm1$residuals)
+  a2 <- sum(res_S[obs_protein_index] * res_T)
   hat_sigma_TS <- (a2 - hat_tau_TS * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
+  
+  ## --- constrain the variance components onto the PSD cone (see header) ---
+  .vc <- constrain_vc_bivariate(hat_tau_T2, hat_tau_TS, hat_tau_S2,
+                                hat_sigma_T2, hat_sigma_TS, hat_sigma_S2,
+                                var_T = mean(res_T^2), var_S = mean(res_S^2),
+                                label = "SynSurrG_eachG_step1")
+  hat_tau_T2   <- .vc$tau_T2;   hat_tau_TS   <- .vc$tau_TS;   hat_tau_S2   <- .vc$tau_S2
+  hat_sigma_T2 <- .vc$sigma_T2; hat_sigma_TS <- .vc$sigma_TS; hat_sigma_S2 <- .vc$sigma_S2
+  vc <- .vc$vc
   
   
   # obtain Σ11: n_obs × n_obs
@@ -2956,7 +3431,7 @@ SynSurrG_eachG_step1 <- function(mydf,G) {
   # obtain Σ12: n_obs × n
   I_values <- rep(hat_sigma_TS, min(n_obs, n))
   I_matrix <- sparseMatrix(
-    i = 1:min(n_obs, n),j = 1:min(n_obs, n),
+    i = seq_len(n_obs), j = obs_protein_index,
     x = I_values,dims = c(n_obs, n)
   )
   Sigma12 <- hat_tau_TS * GRM_obs_full + I_matrix
@@ -2965,7 +3440,9 @@ SynSurrG_eachG_step1 <- function(mydf,G) {
   Sigma22 <- hat_tau_S2 * GRM + hat_sigma_S2 * Diagonal(n)
   
   # 计算 Σ11^{-1}
-  inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
+  ## inv_Sigma11 is never used downstream (it is not in `params`): dropping it
+  ## saves one full block-wise inversion per protein and removes a crash site.
+  ## inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
   
   # obtain Σ22^{-1} block wise inverse 
   inv_Sigma22 <- matrix_inv_block(wait_matrix=Sigma22)
@@ -2985,7 +3462,7 @@ SynSurrG_eachG_step1 <- function(mydf,G) {
   Y <- test_df$Y_obs[obs_protein_index]
   hatY <- test_df$yhat
   
-  X_all <- data.frame(intercept = rep(1,n),test_df[, grepl("^X\\.", names(test_df))])
+  X_all <- data.frame(intercept = rep(1,n),test_df[, grepl("^X\\.", names(test_df)), drop = FALSE])
   X_obs <- X_all[obs_protein_index,]
   
   X_obs <- as.matrix(X_obs)
@@ -3011,7 +3488,8 @@ SynSurrG_eachG_step1 <- function(mydf,G) {
     "A22", "Atb", "B1", "B_mat",
     "B2_1", "B2", "bt2", "Btt1",
     "inv_Sigma22", "Sigma11",
-    "Sigma12_Sigma22inv", "Sigma12"
+    "Sigma12_Sigma22inv", "Sigma12",
+    "vc"
   )
   
   
@@ -3060,7 +3538,7 @@ ObsG_ablation_estimate <- function(mydf) {
   
   data_obs <- data.frame(
     y = test_df$Y_obs,
-    x = test_df[, grepl("^X\\.", names(test_df))]
+    x = test_df[, grepl("^X\\.", names(test_df)), drop = FALSE]
   )%>% na.omit()
   
   n_obs <- nrow(data_obs)
@@ -3076,14 +3554,21 @@ ObsG_ablation_estimate <- function(mydf) {
   hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(model_lm$residuals * model_lm$residuals)
-  hat_sigma_T2 <- max((a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs),0.01)
+  hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
+  
+  ## --- constrain the variance components (see header) --------------------
+  ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
+  .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
+                                 var_T = mean(model_lm$residuals^2), label = "ObsG_ablation_estimate")
+  hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
+  vc <- .vc$vc
   
   Sigma11 <- hat_tau_T2 * GRM_obs_obs + hat_sigma_T2 * Diagonal(n_obs)
   inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
   
   ## for obs or oracle test statistic X needs to include the intercept!
   Y <- data_obs$y
-  X <- as.matrix(cbind(rep(1,length(Y)),data_obs[, grepl("^x\\.X\\.", names(data_obs))]))
+  X <- as.matrix(cbind(rep(1,length(Y)),data_obs[, grepl("^x\\.X\\.", names(data_obs)), drop = FALSE]))
   
   SX <- inv_Sigma11 %*% X
   XtSX_inv <- solve(crossprod(X, SX))
@@ -3092,7 +3577,8 @@ ObsG_ablation_estimate <- function(mydf) {
   invS11_res <- inv_Sigma11 %*% residual
   
   params <- c(
-    "obs_protein_index","invS11_res","SX","inv_Sigma11","XtSX_inv","X"
+    "obs_protein_index","invS11_res","SX","inv_Sigma11","XtSX_inv","X",
+    "vc"
   )
   
   
@@ -3166,7 +3652,7 @@ SynSurr_typeIerror_step1 <- function(mydf,independent_indices) {
   # obtain Σ12: n_obs × n
   I_values <- rep(hat_sigma_TS, min(n_obs, n))
   I_matrix <- sparseMatrix(
-    i = 1:min(n_obs, n),j = 1:min(n_obs, n),
+    i = seq_len(n_obs), j = obs_protein_index,
     x = I_values,dims = c(n_obs, n)
   )
   Sigma12 <- I_matrix
@@ -3414,13 +3900,13 @@ SynSurr_ablation_estimate <- function(mydf,independent_indices) {
   reml_data_SynSurr <- data.frame(
     y = test_df_independent$Y_obs,
     haty = test_df_independent$yhat,
-    x = test_df_independent[, grepl("^X\\.", names(test_df_independent))]
+    x = test_df_independent[, grepl("^X\\.", names(test_df_independent)), drop = FALSE]
   )%>% na.omit()
   
   lm_data_SynSurr <- data.frame(
     y = test_df_independent$Y_obs,
     haty = test_df_independent$yhat,
-    x = test_df_independent[, grepl("^X\\.", names(test_df_independent))]
+    x = test_df_independent[, grepl("^X\\.", names(test_df_independent)), drop = FALSE]
   )
   
   preds <- grep("^x\\.X\\.", names(reml_data_SynSurr), value = TRUE)
@@ -3441,7 +3927,7 @@ SynSurr_ablation_estimate <- function(mydf,independent_indices) {
   # obtain Σ12: n_obs × n
   I_values <- rep(hat_sigma_TS, min(n_obs, n))
   I_matrix <- sparseMatrix(
-    i = 1:min(n_obs, n),j = 1:min(n_obs, n),
+    i = seq_len(n_obs), j = obs_protein_index,
     x = I_values,dims = c(n_obs, n)
   )
   Sigma12 <- I_matrix
@@ -3471,7 +3957,7 @@ SynSurr_ablation_estimate <- function(mydf,independent_indices) {
   Y <- test_df_independent$Y_obs[obs_protein_index]
   hatY <- test_df_independent$yhat
   
-  X_all <- data.frame(intercept = rep(1,n),test_df_independent[, grepl("^X\\.", names(test_df_independent))])
+  X_all <- data.frame(intercept = rep(1,n),test_df_independent[, grepl("^X\\.", names(test_df_independent)), drop = FALSE])
   X_obs <- X_all[obs_protein_index,]
   
   X_obs <- as.matrix(X_obs)
@@ -3533,7 +4019,7 @@ Oracle_ablation_estimate <- function(mydf,independent_indices) {
   
   data_oracle <- data.frame(
     y = test_df_independent$Y_all,
-    x = test_df_independent[, grepl("^X\\.", names(test_df_independent))]
+    x = test_df_independent[, grepl("^X\\.", names(test_df_independent)), drop = FALSE]
   )
   
   preds <- grep("^x\\.X\\.", names(data_oracle), value = TRUE)
@@ -3550,7 +4036,7 @@ Oracle_ablation_estimate <- function(mydf,independent_indices) {
   
   ## for obs or oracle test statistic X needs to include the intercept!
   Y <- data_oracle$y
-  X <- as.matrix(cbind(rep(1,n),test_df_independent[, grepl("^X\\.", names(test_df_independent))]))
+  X <- as.matrix(cbind(rep(1,n),test_df_independent[, grepl("^X\\.", names(test_df_independent)), drop = FALSE]))
   
   SX <- inv_Sigma11 %*% X
   XtSX_inv <- solve(crossprod(X, SX))
@@ -3597,7 +4083,7 @@ Obs_ablation_estimate <- function(mydf,independent_indices) {
   
   data_obs <- data.frame(
     y = test_df_independent$Y_obs,
-    x = test_df_independent[, grepl("^X\\.", names(test_df_independent))]
+    x = test_df_independent[, grepl("^X\\.", names(test_df_independent)), drop = FALSE]
   )%>% na.omit()
   
   n_obs <- nrow(data_obs)
@@ -3615,7 +4101,7 @@ Obs_ablation_estimate <- function(mydf,independent_indices) {
   
   ## for obs or oracle test statistic X needs to include the intercept!
   Y <- data_obs$y
-  X <- as.matrix(cbind(rep(1,length(Y)),data_obs[, grepl("^x\\.X\\.", names(data_obs))]))
+  X <- as.matrix(cbind(rep(1,length(Y)),data_obs[, grepl("^x\\.X\\.", names(data_obs)), drop = FALSE]))
   
   SX <- inv_Sigma11 %*% X
   XtSX_inv <- solve(crossprod(X, SX))
@@ -3957,30 +4443,51 @@ score_test_SynSurrG_power_sim_one_g_to_one_Y <- function(mydf) {
   )
   
   model_lm1 <- lm(y ~ x, data = reml_data_SynSurrG)
-  model_lm2 <- lm(haty ~ x, data = lm_data_SynSurrG)
+  model_lm2 <- lm(haty ~ x, data = lm_data_SynSurrG, na.action = na.exclude)
+  
+  ## residuals aligned to their index sets. na.action = na.exclude keeps the NA
+  ## padding, so res_S[obs_protein_index] refers to the right individuals even
+  ## if lm() dropped rows; the old code indexed a shortened residual vector by
+  ## position, which silently misaligns whenever a covariate has an NA.
+  res_T <- as.numeric(model_lm1$residuals)
+  res_S <- as.numeric(residuals(model_lm2))
+  if (length(res_T) != n_obs)
+    stop("score_test_SynSurrG_power_sim_one_g_to_one_Y: lm1 residual length ", length(res_T), " != n_obs ", n_obs,
+         " -- NA in covariates or surrogate at observed individuals")
+  if (length(res_S) != n)
+    stop("score_test_SynSurrG_power_sim_one_g_to_one_Y: lm2 residual length ", length(res_S), " != n ", n)
   
   GRM_o <- GRM_obs_obs
   diag(GRM_o) <- 0
   GRM_oall <- GRM
   diag(GRM_oall) <- 0
   
-  a1 <- as.numeric(t(model_lm1$residuals) %*% GRM_o %*% model_lm1$residuals)
+  a1 <- as.numeric(t(res_T) %*% GRM_o %*% res_T)
   hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm1$residuals * model_lm1$residuals)
+  a2 <- sum(res_T * res_T)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
   
-  a1 <- as.numeric(t(model_lm2$residuals) %*% GRM_oall %*% model_lm2$residuals)
+  a1 <- as.numeric(t(res_S) %*% GRM_oall %*% res_S)
   hat_tau_S2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm2$residuals * model_lm2$residuals)
+  a2 <- sum(res_S * res_S)
   hat_sigma_S2 <- (a2 - hat_tau_S2 * sum(diag(GRM)))/nrow(GRM)
   
-  a1 <- as.numeric(t(model_lm2$residuals[obs_protein_index]) %*% GRM_o %*% model_lm1$residuals)
+  a1 <- as.numeric(t(res_S[obs_protein_index]) %*% GRM_o %*% res_T)
   hat_tau_TS <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
-  a2 <- sum(model_lm2$residuals[obs_protein_index] * model_lm1$residuals)
+  a2 <- sum(res_S[obs_protein_index] * res_T)
   hat_sigma_TS <- (a2 - hat_tau_TS * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
+  
+  ## --- constrain the variance components onto the PSD cone (see header) ---
+  .vc <- constrain_vc_bivariate(hat_tau_T2, hat_tau_TS, hat_tau_S2,
+                                hat_sigma_T2, hat_sigma_TS, hat_sigma_S2,
+                                var_T = mean(res_T^2), var_S = mean(res_S^2),
+                                label = "score_test_SynSurrG_power_sim_one_g_to_one_Y")
+  hat_tau_T2   <- .vc$tau_T2;   hat_tau_TS   <- .vc$tau_TS;   hat_tau_S2   <- .vc$tau_S2
+  hat_sigma_T2 <- .vc$sigma_T2; hat_sigma_TS <- .vc$sigma_TS; hat_sigma_S2 <- .vc$sigma_S2
+  vc <- .vc$vc
   
   # obtain Σ11: n_obs × n_obs
   Sigma11 <- hat_tau_T2 * GRM_obs_obs + hat_sigma_T2 * Diagonal(n_obs)
@@ -3988,8 +4495,7 @@ score_test_SynSurrG_power_sim_one_g_to_one_Y <- function(mydf) {
   # obtain Σ12: n_obs × n
   I_values <- rep(hat_sigma_TS, min(n_obs, n))
   I_matrix <- sparseMatrix(
-    i = 1:min(n_obs, n),
-    j = 1:min(n_obs, n),
+    i = seq_len(n_obs), j = obs_protein_index,
     x = I_values,
     dims = c(n_obs, n)
   )
@@ -3999,7 +4505,9 @@ score_test_SynSurrG_power_sim_one_g_to_one_Y <- function(mydf) {
   Sigma22 <- hat_tau_S2 * GRM + hat_sigma_S2 * Diagonal(n)
   
   # 计算 Σ11^{-1}
-  inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
+  ## inv_Sigma11 is never used downstream (it is not in `params`): dropping it
+  ## saves one full block-wise inversion per protein and removes a crash site.
+  ## inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
   
   # obtain Σ22^{-1} block wise inverse 
   inv_Sigma22 <- matrix_inv_block(wait_matrix=Sigma22)
@@ -4046,7 +4554,8 @@ score_test_SynSurrG_power_sim_one_g_to_one_Y <- function(mydf) {
     "obs_protein_index","V11", 
     "Y", "hatY", "X_obs", "Att", "A22", "Atb", 
     "B1", "B_mat", "B2_1", "B2", "bt2", "Btt1",
-    "inv_Sigma22", "Sigma11", "Sigma12_Sigma22inv", "Sigma12"
+    "inv_Sigma22", "Sigma11", "Sigma12_Sigma22inv", "Sigma12",
+    "vc"
   )
   
   SynSurrG_step1_pars <- mget(params, envir = environment())
@@ -4055,6 +4564,7 @@ score_test_SynSurrG_power_sim_one_g_to_one_Y <- function(mydf) {
   
   results <- score_test_SynSurrG_single(G_all,step1_pars = SynSurrG_step1_pars)
   
+  attr(results, "vc") <- vc
   return(results)
 }
 
@@ -4123,6 +4633,13 @@ score_test_ObsG_power_sim_one_g_to_one_Y <- function(mydf) {
   a2 <- sum(model_lm1$residuals * model_lm1$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
   
+  ## --- constrain the variance components (see header) --------------------
+  ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
+  .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
+                                 var_T = mean(model_lm1$residuals^2), label = "score_test_ObsG_power_sim_one_g_to_one_Y")
+  hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
+  vc <- .vc$vc
+  
   # obtain Σ11: n_obs × n_obs
   Sigma11 <- hat_tau_T2 * GRM_obs_obs + hat_sigma_T2 * Diagonal(n_obs)
   
@@ -4156,6 +4673,7 @@ score_test_ObsG_power_sim_one_g_to_one_Y <- function(mydf) {
   
   names(results) <- c("T_score_ObsG","negative_log10_pval_ObsG")
   
+  attr(results, "vc") <- vc
   return(results)
 }
 
@@ -4217,6 +4735,13 @@ score_test_OracleG_power_sim_one_g_to_one_Y <- function(mydf) {
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM)))/nrow(GRM)
   
+  ## --- constrain the variance components (see header) --------------------
+  ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
+  .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
+                                 var_T = mean(model_lm$residuals^2), label = "score_test_OracleG_power_sim_one_g_to_one_Y")
+  hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
+  vc <- .vc$vc
+  
   Sigma11 <- hat_tau_T2 * GRM + hat_sigma_T2 * Diagonal(n)
   
   inv_Sigma11 <- matrix_inv_block(wait_matrix=Sigma11)
@@ -4232,10 +4757,10 @@ score_test_OracleG_power_sim_one_g_to_one_Y <- function(mydf) {
   invS11_res <- inv_Sigma11 %*% residual
   
   
-  ## G_all was missing here in the analysis source; the two sibling
-  ## power-simulation functions both take it from mydf.
+  ## G_all was never assigned here (the ObsG twin does `G_all <- mydf$G_all`),
+  ## so this function silently depended on a G_all leaking in from the caller.
   G_all <- mydf$G_all
-
+  
   SU <- as.numeric(crossprod(G_all, invS11_res))
   A <- crossprod(SX, G_all)
   VU <- as.numeric(colSums(G_all * (inv_Sigma11 %*% G_all)) - colSums(A * (XtSX_inv %*% A)))
@@ -4244,6 +4769,7 @@ score_test_OracleG_power_sim_one_g_to_one_Y <- function(mydf) {
   
   names(results) <- c("T_score_OracleG","negative_log10_pval_OracleG")
   
+  attr(results, "vc") <- vc
   return(results)
 }
 

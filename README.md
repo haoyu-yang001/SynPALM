@@ -55,6 +55,8 @@ R (>= 4.3.0) and the following packages:
 |---|---|---|
 | Matrix | 1.6.1.1 | ships with R as a recommended package |
 | dplyr | 1.1.4 | from CRAN |
+| ranger | 0.18.0 | from CRAN; random forests for the synthetic phenotype |
+| BEDMatrix | 2.0.4 | optional, from CRAN; reading PLINK `.bed` files |
 | methods, parallel, stats, utils | — | ship with R |
 
 No compilation is required; SynPALM contains only R code.
@@ -93,10 +95,11 @@ Measured on an Apple silicon Mac, R 4.3.2, with dependencies already installed.
 
 ## Demo
 
-A fully self-contained demonstration is bundled with the package. It simulates a
-cohort of 20,000 individuals in 5,000 four-member families, discards 90% of the
-target phenotypes, and tests 500 variants of which the first is causal. No
-external data are required.
+A self-contained demonstration is bundled with the package. It simulates a
+cohort of 20,000 individuals in 5,000 four-member families, measures the protein
+in only 10% of them, offers the random forest 200 continuous and 30 binary
+candidate surrogates (of which only a handful carry information), and tests 500
+variants of which the first is causal. No external data are required.
 
 ### Instructions to run
 
@@ -104,143 +107,167 @@ external data are required.
 source(system.file("examples", "quickstart.R", package = "SynPALM"))
 ```
 
-Simulation settings are collected at the top of that file (`N_FAM`, `FAM_SIZE`,
-`MISS_RATE`, `N_SNP`, `BETA_G`, `R_TS`, `TAU`, `SIGMA`) and can be edited
+Simulation settings are collected at the top of that file and can be edited
 freely. The random seed is fixed so that the output below is reproducible.
 
 ### Expected output
 
 ```
-GRM: 20000 x 20000  | class: dgCMatrix  | nonzero fraction: 2e-04
-Cohort: 20000 individuals | 1999 with an observed target phenotype (10%), missingness 90%
-Observed-vs-synthetic correlation: 0.582
+Cohort: 20000 individuals | 1999 with a measured protein | 200 continuous + 30 binary candidate surrogates
 
---- structure of mydf ---
-List of 4
- $ X_all:'data.frame':	20000 obs. of  7 variables:
- $ S    : num [1:20000] 1.1057 -0.9911 -0.1809 1.091 -0.0466 ...
- $ Y_obs: num [1:20000] 0.871 NA NA NA -1.291 ...
- $ GRM  :Formal class 'dgCMatrix' [package "Matrix"] with 6 slots
+--- Synthetic phenotype (5-fold cross-fit) ---
+  correlation with the measured protein, per fold and overall:
+ fold n_train n_labelled n_predicted   rho rho_spearman    r2
+    1    1595        404        4000 0.898        0.893 0.806
+    2    1584        415        4000 0.916        0.912 0.839
+    3    1603        396        4000 0.902        0.902 0.813
+    4    1635        364        4000 0.881        0.874 0.775
+    5    1579        420        4000 0.899        0.893 0.808
+  all      NA       1999       20000 0.900        0.896 0.810
+  informative surrogates selected in all 5 folds   : 10 of 10
 
-Relatedness blocks found: 5000 (expected 5000)
-
-Fitting the null model (step 1)...
-Step 1 elapsed (s): 0.2
-
-Running the SynPALM score test (step 2)...
-Score test elapsed (s): 2.1  (500 variants, 4.2 ms per variant)
-
---- components returned by score_test_SynSurrG_multiply ---
-[1] "T_score_SynSurrG"             "negative_log10_pval_SynSurrG"
-[3] "hat_beta_SynSurrG"            "var_hat_beta_SynSurrG"
+--- First rows of fit$results ---
+    variant    af n_missing SynSurrG_beta SynSurrG_se SynSurrG_p
+1 rs_demo_1 0.286         0        0.1025      0.0166   7.01e-10
+2 rs_demo_2 0.316         0       -0.0173      0.0163   2.87e-01
+3 rs_demo_3 0.236         0        0.0137      0.0179   4.45e-01
+  SynSurrG_log10p ObsG_beta ObsG_se   ObsG_p ObsG_log10p rho_oof
+1           9.155    0.1379  0.0321 1.78e-05       4.749     0.9
+2           0.542   -0.0206  0.0317 5.16e-01       0.288     0.9
+3           0.351    0.0602  0.0347 8.30e-02       1.081     0.9
 
 --- Causal variant (true standardised effect = 0.08) ---
-   variant neglog10P hat_beta se_beta
- rs_demo_1     6.828   0.1475  0.0281
+               method log10p   beta     se
+   SynPALM (SynSurrG)  9.155 0.1025 0.0166
+ observed only (ObsG)  4.749 0.1379 0.0321
 
 --- Calibration on 499 null variants ---
-  median -log10(P)          : 0.305   (expected 0.301)
-  genomic inflation lambda  : 1.024   (expected 1.000)
-  proportion P < 0.05       : 0.0501   (expected 0.05)
-  proportion P < 0.01       : 0.004   (expected 0.01)
-  mean hat_beta             : -0.00159   (expected 0)
+  SynSurrG lambda = 1.047   P<0.05: 0.052   P<0.01: 0.012
+  ObsG     lambda = 1.010   P<0.05: 0.052   P<0.01: 0.014
+
+--- Variance components (SynSurrG) ---
+  tau_T2   tau_TS   tau_S2 sigma_T2 sigma_TS sigma_S2 
+  0.5549   0.4333   0.3228   0.3333   0.3694   0.5908 
+  valid without projection: FALSE
 
 --- Timing ---
-Whole demo elapsed (s): 3.5
-Peak R memory (MB)    : 583
+synpalm_gwas() elapsed (s): 19.2
 ```
 
-The four calibration figures are the substantive check. Under the null,
-p-values should be uniform, so the median of `-log10(P)` should sit at 0.301 and
-the genomic inflation factor at 1.0.
-
-Note that `hat_beta` is a per-allele effect on the raw 0/1/2 genotype scale,
-whereas `BETA_G` in the simulation is specified on the standardised genotype
-scale. The two therefore differ by a factor of `1 / sd(G)`, which is
-approximately 1.5 for the allele frequencies used here.
-
-Elapsed times and peak memory will vary with hardware.
+SynPALM recovers the causal variant far more strongly than the analysis of
+measured individuals alone, while both stay calibrated on the null variants.
+`beta` is a per-allele effect on the 0/1/2 genotype scale, whereas `BETA_G` in
+the simulation is on the standardised scale, so they differ by `1 / sd(G)`.
 
 ### Expected run time
 
-Approximately **3.5 seconds** on an Apple silicon Mac (R 4.3.2), of which 0.2 s
-is the null model fit and 2.1 s the 500 score tests.
+About 20 seconds on one core of a Linux cluster node (R 4.4.1), most of it in
+the five random forests.
 
 ---
 
 ## Instructions for use — running SynPALM on your own data
 
-Every entry point takes a single list, conventionally called `mydf`, with four
-elements:
+### Inputs
 
-| Element | Type | Description |
+| Argument | Type | Description |
 |---|---|---|
-| `X_all` | data frame, N × p | Covariates for **all** individuals: age, sex, genotyping array, ancestry PCs, recruitment centre, and so on. **No intercept column** — the package adds one. |
-| `S` | numeric, length N | Synthetic (predicted) phenotype, complete for all individuals. Inverse-normal transformed. |
-| `Y_obs` | numeric, length N | Measured target phenotype, `NA` for individuals without a measurement. Inverse-normal transformed over the measured subset. |
-| `GRM` | sparse matrix, N × N | Genetic relatedness matrix over all individuals. |
+| `protein` | named numeric vector | The measured protein, `NA` where unmeasured. Names are sample IDs. |
+| `rf_features` | data frame, rownames = IDs | Candidate surrogates for the random forest (labs, vitals, questionnaire items, ...). As many columns as you like: within each fold the `n_top` (default 100) most correlated with the protein are kept. |
+| `rf_binary` | data frame, rownames = IDs | Optional 0/1 candidate surrogates (e.g. diagnosis categories), screened by a Wilcoxon test within each fold. |
+| `rf_fixed` | character | Columns of `rf_features` always given to the forest (e.g. age, sex), not screened. |
+| `covariates` | data frame, rownames = IDs | Adjustment covariates of the mixed model: age, sex, PCs, batch, ... Factors are expanded automatically. No missing values. |
+| `grm` | sparse matrix, dimnames = IDs | Sparse genetic relatedness matrix, e.g. from FastSparseGRM. |
+| `genotype` | `.bed` path or matrix | A PLINK `.bed` file (read with BEDMatrix; position and alleles come from the `.bim`), or any matrix-like object with sample IDs as rownames and variant IDs as colnames. |
 
-Rows of `X_all`, `S`, `Y_obs` and `GRM` must refer to the same individuals in
-the same order. Align them by an explicit identifier such as `eid`, never by row
-position.
+Inputs are aligned by sample ID, never by position. The analysis set is the
+individuals present in all of them; everyone in it must also be in the
+genotype data. The individuals are reordered internally so that every
+relatedness cluster is contiguous, which the block-wise algorithms need.
 
-### Two input requirements that are easy to miss
-
-**The GRM must be a general sparse matrix, not a symmetric-class one.**
-Internally `summary()` is used to read the (i, j, x) triplet. For a
-symmetric-class matrix such as `dsCMatrix` that returns only the lower triangle,
-which would yield incorrect relatedness blocks without raising an error.
-Convert explicitly:
-
-```r
-GRM <- methods::as(methods::as(GRM, "CsparseMatrix"), "generalMatrix")
-```
-
-**Individuals must be ordered so that relatedness blocks are contiguous.** Block
-detection sweeps the matrix once and cannot recover blocks whose members are
-scattered across the ordering. Check the result:
-
-```r
-blocks <- find_blocks_vectorized(GRM)
-length(blocks)                       # number of independent blocks
-max(vapply(blocks, length, 1L))      # size of the largest block
-```
-
-### Worked pipeline
+### One call
 
 ```r
 library(SynPALM)
-library(Matrix)
 
-## 1. one individual per relatedness block, for the comparators that assume
-##    independence
-blocks <- find_blocks_vectorized(GRM)
-independent_indices <- vapply(blocks,
-                              function(b) b[sample.int(length(b), 1)],
-                              integer(1))
-obs_protein_index <- which(!is.na(mydf$Y_obs))
+fit <- synpalm_gwas(protein     = protein,
+                    covariates  = covariates,
+                    rf_features = surrogates,
+                    rf_binary   = diagnoses,
+                    rf_fixed    = c("age", "sex"),
+                    grm         = grm,
+                    genotype    = "genotypes/chr22.bed")
 
-## 2. step 1 -- variance components and null model quantities.
-##    Depends only on the phenotype, so it is fitted once per protein and
-##    reused across every genotype chunk.
-SynSurrG_step1 <- SynSurrG_ablation_estimate(mydf)
-
-## 3. genotypes, read in chunks to bound memory
-Gmat <- fix_constant_columns(
-  Gmat, intersect(obs_protein_index, independent_indices))
-
-## 4. step 2 -- score test across the chunk
-res <- score_test_SynSurrG_multiply(g_matrix   = Gmat,
-                                    step1_pars = SynSurrG_step1)
-
-## 5. results, one element per variant
-res$negative_log10_pval_SynSurrG
-res$hat_beta_SynSurrG
-res$var_hat_beta_SynSurrG
+head(fit$results)          # one row per variant
+fit$accuracy               # synthetic vs measured protein, per fold and overall
 ```
 
-In the manuscript analysis variants were processed in chunks of 200 and the
-per-chunk results combined with `merge_results()`.
+`fit$results` has, per variant, `chr`, `pos`, `effect_allele` (the counted
+allele), `other_allele`, `af`, `n_missing`, for each method `_beta`, `_se`,
+`_p` and `_log10p`, and `rho_oof`. Missing genotypes are mean-imputed
+(`2 * af`) before testing; `n_missing` counts them.
+
+`fit$accuracy` measures how well the synthetic phenotype reproduces the
+protein. The forest is 5-fold cross-fitted, so every measured individual is
+predicted by a forest that never saw them or their relatives, and the
+correlation is an honest out-of-sample one. The table has one row per fold
+and a row `fold = "all"` pooling every measured individual (that pooled
+Pearson correlation is `rho_oof`): `n_train`, `n_labelled`, `n_predicted`,
+`rho` (Pearson), `rho_spearman` and `r2`. By default the methods are `SynSurrG` (SynPALM) and `ObsG`
+(the same mixed model on measured individuals only); add `"SynSurr"` and
+`"Obs"` to `methods` for the versions on one individual per relatedness
+cluster.
+
+### Step by step, for a genome-wide scan in parallel jobs
+
+The null model depends only on the phenotype, so it is fitted once per protein
+and reused by every genotype chunk:
+
+```r
+folds <- synpalm_folds(grm, K = 5)                       # relatedness-aware folds
+pred  <- synpalm_predict(protein, surrogates, folds,     # cross-fitted random forest
+                         rf_binary = diagnoses, rf_fixed = c("age", "sex"))
+null  <- synpalm_null(pred$protein, pred$protein_hat,    # variance components
+                      covariates, grm, folds)
+saveRDS(null, "null_model.rds")
+
+## then, in one job per chromosome:
+null <- readRDS("null_model.rds")
+res  <- synpalm_scan(null, sprintf("genotypes/chr%s.bed", chr))
+```
+
+`pred$accuracy` holds the cross-fitted correlations; save it with the null
+model. `inst/examples/biobank_template.R` is a ready-to-edit script for exactly
+this two-stage workflow (`fit` once per protein, writing
+`<protein>_rf_accuracy.tsv`; `scan` once per chromosome).
+
+### What happens inside
+
+1. **Folds.** Whole relatedness clusters are assigned to five folds, so no
+   individual's synthetic phenotype depends on a relative's measurement.
+2. **Synthetic phenotype.** In each fold, surrogates are screened and a random
+   forest (`ranger`, 300 trees) is trained on measured individuals outside the
+   fold, then predicts everyone in the fold. Its correlation with the measured
+   protein is reported per fold and overall.
+3. **Null model.** The measured protein (measured individuals) and the
+   synthetic phenotype (everyone) are inverse-normal transformed; variance
+   components are estimated by Haseman-Elston regression on the sparse GRM.
+4. **Score tests.** Variants are tested in chunks of 200.
+
+By default the raw variance-component estimates are used, as in the
+manuscript analysis (`vc_constraint = "none"`); `fit$null$pars$SynSurrG$vc`
+records whether they formed a valid covariance. See `?SynPALM-package` for
+`vc_constraint = "project"` and the other numerical-stability options.
+
+### Lower-level interface
+
+The functions behind the pipeline can be called directly. They take a single
+list, `mydf`, with `X_all` (covariates, no intercept column), `S` (synthetic
+phenotype, inverse-normal transformed), `Y_obs` (measured phenotype,
+inverse-normal transformed, `NA` where unmeasured) and `GRM`, all in the same
+order, with relatedness clusters contiguous. The GRM must be a general, not a
+symmetric-class, sparse matrix.
+
 
 ### Comparator analyses
 
@@ -298,8 +325,10 @@ For a self-contained, runnable check of the method and its calibration, see the
 
 | Path | Contents |
 |---|---|
-| `R/` | Package source. `synpalm_functions.R` holds the analysis functions; `SynPALM-package.R` holds imports and package-level documentation. |
+| `R/` | Package source. `pipeline.R` holds the end-to-end interface (`synpalm_gwas()` and its steps); `synpalm_functions.R` the model-fitting and score-test functions; `SynPALM-package.R` imports and package-level documentation. |
 | `inst/examples/quickstart.R` | The self-contained demo described above. |
+| `inst/examples/biobank_template.R` | Template for a real biobank: fit once per protein, scan once per chromosome. |
+| `tests/` | Unit tests on simulated data. |
 | `reproduce/` | Driver script for the UK Biobank analysis, for inspection. |
 | `man/` | Generated function documentation. |
 | `tools/` | Development helpers, not part of the installed package. |
@@ -319,5 +348,3 @@ Under review at *Nature Communications* (manuscript NCOMMS-26-058511-T).
 Archived release used during peer review: Zenodo, DOI [10.5281/zenodo.21782545](https://doi.org/10.5281/zenodo.21782545) (tag `v0.1.1`).
 
 Summary statistics are browsable at <https://syn-palm.genohub.org/>.
-NA
-release used during peer review.**

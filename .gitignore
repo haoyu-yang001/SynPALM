@@ -8,3 +8,17 @@
 .RData
 .RData
 .Rhistory
+
+# Individual-level data never goes into this repository; only simulated data.
+*.bed
+*.bim
+*.fam
+*.pgen
+*.pvar
+*.psam
+*.bgen
+*.bgi
+*.sample
+*.RData
+*.rda
+*.rds

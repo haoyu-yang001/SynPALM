@@ -4,7 +4,15 @@
 \alias{matrix_inv_Amatrix}
 \title{Invert a Relationship Matrix with Adaptive Block Detection}
 \usage{
-matrix_inv_Amatrix(Amatrix, thr = 0.006, threshold = 1000)
+matrix_inv_Amatrix(
+  Amatrix,
+  thr = 0.006,
+  threshold = 1000,
+  max_block = threshold,
+  thr_step = 0.001,
+  max_thr_iter = 200L,
+  label = "A"
+)
 }
 \arguments{
 \item{Amatrix}{A large square matrix (typically a sparse genetic relationship matrix).}
@@ -13,12 +21,24 @@ matrix_inv_Amatrix(Amatrix, thr = 0.006, threshold = 1000)
 
 \item{threshold}{Integer. The maximum number of rows/columns for merged blocks
 during parallel computation. Default is 1000.}
+
+\item{max_block}{Integer. \code{thr} is raised until no block is larger than
+this. Defaults to \code{threshold}.}
+
+\item{thr_step}{Numeric. Increment applied to \code{thr} at each step.}
+
+\item{max_thr_iter}{Integer. Maximum number of increments before giving up
+with a warning.}
+
+\item{label}{Character label used in diagnostic messages.}
 }
 \value{
-A sparse block-diagonal matrix representing the inverse of the (possibly thresholded) input matrix.
+A sparse block-diagonal matrix representing the inverse of the
+  (possibly thresholded) input matrix, with a \code{"block_diag"} attribute
+  summarising how each block was inverted.
 }
 \description{
 This function performs block-wise inversion of a relationship matrix (A-matrix).
 It features an adaptive thresholding mechanism that increases the sparseness
-threshold until the maximum block size is manageable (<= 1000) for inversion.
+threshold until the maximum block size is manageable (<= \code{max_block}) for inversion.
 }

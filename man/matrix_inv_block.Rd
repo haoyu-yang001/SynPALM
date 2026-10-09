@@ -4,20 +4,26 @@
 \alias{matrix_inv_block}
 \title{Parallel Block-wise Matrix Inversion}
 \usage{
-matrix_inv_block(wait_matrix, threshold = 1000)
+matrix_inv_block(wait_matrix, threshold = 1000, label = "Sigma")
 }
 \arguments{
 \item{wait_matrix}{A large square matrix (typically a sparse \code{dgCMatrix}) to be inverted.}
 
 \item{threshold}{Integer. The maximum number of rows/columns for a merged block
 to optimize memory and computation. Default is 1000.}
+
+\item{label}{Character label used in diagnostic messages.}
 }
 \value{
-A sparse block-diagonal matrix representing the inverse of the input matrix.
+A sparse block-diagonal matrix representing the inverse of the input
+  matrix, with a \code{"block_diag"} attribute summarising how each block
+  was inverted.
 }
 \description{
 This function performs an efficient inversion of a large sparse matrix by
 partitioning it into independent blocks. It merges smaller blocks to
 optimize parallel processing and uses Cholesky decomposition for
-numerical stability.
+numerical stability. A block that is not positive definite is regularised
+with an escalating ridge, then an eigenvalue-floored inverse, and reported
+by block id; see \code{\link{SynPALM-package}} for the controlling options.
 }
