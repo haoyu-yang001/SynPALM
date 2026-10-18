@@ -4,7 +4,7 @@
 \alias{constrain_vc_univariate}
 \title{Constrain Univariate Variance Components}
 \usage{
-constrain_vc_univariate(tau2, sigma2, var_T = 1, label = "")
+constrain_vc_univariate(tau2, sigma2, var_T = 1, label = "", dbar = 1)
 }
 \arguments{
 \item{tau2}{Raw genetic variance estimate.}
@@ -14,6 +14,10 @@ constrain_vc_univariate(tau2, sigma2, var_T = 1, label = "")
 \item{var_T}{Mean squared residual of the trait, used to scale the floor.}
 
 \item{label}{Character label used in messages.}
+
+\item{dbar}{Mean diagonal of the GRM in the moment equation; when
+\eqn{\tau^2} is floored at 0, \eqn{\sigma^2} is re-solved as
+\eqn{\sigma^2_{raw} + \tau^2_{raw} \bar d}.}
 }
 \value{
 A list with \code{tau2}, \code{sigma2} and \code{vc}, a list

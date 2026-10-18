@@ -13,7 +13,9 @@ constrain_vc_bivariate(
   sigma_S2,
   var_T = 1,
   var_S = 1,
-  label = ""
+  label = "",
+  dbar_T = 1,
+  dbar_S = 1
 )
 }
 \arguments{
@@ -26,6 +28,14 @@ estimates.}
 the residual-variance floor.}
 
 \item{label}{Character label used in messages.}
+
+\item{dbar_T, dbar_S}{Mean diagonal of the GRM used in the moment equations
+of the target (and cross) components and of the synthetic component. When
+the genetic block is projected, the residual components are re-solved from
+\eqn{a_2/n = \tau \bar d + \sigma}, i.e.
+\eqn{\sigma = \sigma_{raw} + (\tau_{raw} - \tau_{used}) \bar d}, before
+the residual block is constrained (\code{options(synsurrg.rematch_sigma =
+FALSE)} keeps the raw residual components).}
 }
 \value{
 A list with the six constrained components and \code{vc}, a list

@@ -280,6 +280,26 @@ INT <- function(data, pheno, k = 0.375){
 #' @noRd
 .ss_strict  <- function() identical(.ss_opt("on_nonpsd", "project"), "stop")
 
+#' Method-of-moments ratio with a guard for no related pairs
+#'
+#' Returns \code{a1 / denom}. Without any related pair among the individuals
+#' used (for example no relatives among the labelled individuals) the
+#' denominator \eqn{\sum_{i \ne j} K_{ij}^2} is zero and the genetic variance
+#' component cannot be estimated; it is then set to 0, which reduces the model
+#' to the bivariate linear model of SynSurr.
+#'
+#' @param a1 Numerator (quadratic form of the residuals in the off-diagonal GRM).
+#' @param denom Sum of squared off-diagonal GRM entries.
+#' @return The estimate, or 0 when \code{denom} is 0.
+#' @noRd
+.ss_mom_ratio <- function(a1, denom) {
+  if (!is.finite(denom) || denom <= .Machine$double.eps) {
+    if (.ss_verbose()) message("no related pairs among the individuals used: genetic variance component set to 0")
+    return(0)
+  }
+  a1 / denom
+}
+
 #' Project a Symmetric 2x2 Matrix onto the PSD Cone
 #'
 #' Truncates negative eigenvalues of \code{[a, ab; ab, b]} to zero, applies a
@@ -347,6 +367,13 @@ psd_project_2x2 <- function(a, ab, b, floor_diag = 0, shrink = 1e-6) {
 #' @param var_T,var_S Mean squared residuals of the two traits, used to scale
 #'   the residual-variance floor.
 #' @param label Character label used in messages.
+#' @param dbar_T,dbar_S Mean diagonal of the GRM used in the moment equations
+#'   of the target (and cross) components and of the synthetic component. When
+#'   the genetic block is projected, the residual components are re-solved from
+#'   \eqn{a_2/n = \tau \bar d + \sigma}, i.e.
+#'   \eqn{\sigma = \sigma_{raw} + (\tau_{raw} - \tau_{used}) \bar d}, before
+#'   the residual block is constrained (\code{options(synsurrg.rematch_sigma =
+#'   FALSE)} keeps the raw residual components).
 #'
 #' @return A list with the six constrained components and \code{vc}, a list
 #'   holding the \code{raw} and \code{used} values, the projection flags, and
@@ -355,7 +382,8 @@ psd_project_2x2 <- function(a, ab, b, floor_diag = 0, shrink = 1e-6) {
 #' @export
 constrain_vc_bivariate <- function(tau_T2, tau_TS, tau_S2,
                                    sigma_T2, sigma_TS, sigma_S2,
-                                   var_T = 1, var_S = 1, label = "") {
+                                   var_T = 1, var_S = 1, label = "",
+                                   dbar_T = 1, dbar_S = 1) {
   raw <- c(tau_T2 = tau_T2, tau_TS = tau_TS, tau_S2 = tau_S2,
            sigma_T2 = sigma_T2, sigma_TS = sigma_TS, sigma_S2 = sigma_S2)
   
@@ -364,6 +392,20 @@ constrain_vc_bivariate <- function(tau_T2, tau_TS, tau_S2,
   if (!is.finite(scale) || scale <= 0) scale <- 1
   
   g <- psd_project_2x2(tau_T2,   tau_TS,   tau_S2,   floor_diag = 0)
+  ## Re-solve the residual components from the same diagonal moment equations
+  ## with the constrained genetic block (2026-10-13):
+  ##   a2/n = tau * dbar + sigma  =>  sigma = sigma_raw + (tau_raw - tau_used) * dbar
+  ## with dbar = tr(GRM)/n of the matrix used in that equation (T and TS: the
+  ## observed block, S: all individuals). Keeping sigma_raw instead inflates the
+  ## residual variance by |tau_raw| * dbar whenever tau_raw < 0, which makes the
+  ## score test conservative (lambda_GC 0.85-0.93 under permutation).
+  ## A no-op when g is unchanged. options(synsurrg.rematch_sigma = FALSE)
+  ## restores the 2026-08-22 behaviour.
+  if (isTRUE(.ss_opt("rematch_sigma", TRUE)) && g$changed) {
+    sigma_T2 <- sigma_T2 + (tau_T2 - g$a)  * dbar_T
+    sigma_TS <- sigma_TS + (tau_TS - g$ab) * dbar_T
+    sigma_S2 <- sigma_S2 + (tau_S2 - g$b)  * dbar_S
+  }
   r <- psd_project_2x2(sigma_T2, sigma_TS, sigma_S2, floor_diag = eps * scale)
   
   ## "none": keep the raw estimates as the pre-2026-08-22 code did, flooring
@@ -401,6 +443,7 @@ constrain_vc_bivariate <- function(tau_T2, tau_TS, tau_S2,
   
   vc <- list(raw = raw, used = used,
              projected_G = g$changed, projected_E = r$changed,
+             rematch_sigma = isTRUE(.ss_opt("rematch_sigma", TRUE)),
              detail_G = g[c("truncated", "floored", "shrunk")],
              detail_E = r[c("truncated", "floored", "shrunk")],
              rho_g = used[["tau_TS"]]   / sqrt(max(used[["tau_T2"]]   * used[["tau_S2"]],   .Machine$double.eps)),
@@ -430,12 +473,15 @@ constrain_vc_bivariate <- function(tau_T2, tau_TS, tau_S2,
 #' @param sigma2 Raw residual variance estimate.
 #' @param var_T Mean squared residual of the trait, used to scale the floor.
 #' @param label Character label used in messages.
+#' @param dbar Mean diagonal of the GRM in the moment equation; when
+#'   \eqn{\tau^2} is floored at 0, \eqn{\sigma^2} is re-solved as
+#'   \eqn{\sigma^2_{raw} + \tau^2_{raw} \bar d}.
 #'
 #' @return A list with \code{tau2}, \code{sigma2} and \code{vc}, a list
 #'   holding the \code{raw} and \code{used} values and the flooring flags.
 #' @keywords internal
 #' @export
-constrain_vc_univariate <- function(tau2, sigma2, var_T = 1, label = "") {
+constrain_vc_univariate <- function(tau2, sigma2, var_T = 1, label = "", dbar = 1) {
   raw <- c(tau_T2 = tau2, sigma_T2 = sigma2)
   
   eps   <- .ss_opt("ridge_e", 0.01)
@@ -451,10 +497,16 @@ constrain_vc_univariate <- function(tau2, sigma2, var_T = 1, label = "") {
                           label = label)))
   }
   
-  bad_tau   <- !is.finite(tau2)   || tau2   < 0
-  bad_sigma <- !is.finite(sigma2) || sigma2 < eps * scale
-  tau2   <- if (bad_tau)   0             else tau2
-  sigma2 <- if (bad_sigma) eps * scale   else sigma2
+  ## tau2 floored at 0; when it is, sigma2 is re-solved from
+  ## a2/n = tau2 * dbar + sigma2 (see constrain_vc_bivariate; 2026-10-13).
+  ## sigma2 is then floored as before (tau2 is left alone, as in the bivariate case).
+  rematch   <- isTRUE(.ss_opt("rematch_sigma", TRUE)) && is.finite(tau2) && is.finite(sigma2)
+  bad_tau   <- !is.finite(tau2) || tau2 < 0
+  tau_used  <- if (bad_tau) 0 else tau2
+  sig_used  <- if (rematch) sigma2 + (tau2 - tau_used) * dbar else sigma2
+  bad_sigma <- !is.finite(sig_used) || sig_used < eps * scale
+  if (bad_sigma) sig_used <- eps * scale
+  tau2 <- tau_used; sigma2 <- sig_used
   
   if ((bad_tau || bad_sigma) && .ss_strict())
     stop(sprintf("[%s] variance components out of range: %s", label,
@@ -467,7 +519,8 @@ constrain_vc_univariate <- function(tau2, sigma2, var_T = 1, label = "") {
   
   list(tau2 = tau2, sigma2 = sigma2,
        vc = list(raw = raw, used = c(tau_T2 = tau2, sigma_T2 = sigma2),
-                 floored_tau = bad_tau, floored_sigma = bad_sigma, label = label))
+                 floored_tau = bad_tau, floored_sigma = bad_sigma,
+                 rematch_sigma = rematch, label = label))
 }
 
 #' Greedily merge consecutive blocks up to a size limit
@@ -2399,19 +2452,19 @@ SynSurrG_typeIerror_step1 <- function(mydf) {
   diag(GRM_oall) <- 0
   
   a1 <- as.numeric(t(res_T) %*% GRM_o %*% res_T)
-  hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_T * res_T)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
   
   a1 <- as.numeric(t(res_S) %*% GRM_oall %*% res_S)
-  hat_tau_S2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_S2 <- .ss_mom_ratio(a1, sum((GRM_oall)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_S * res_S)
   hat_sigma_S2 <- (a2 - hat_tau_S2 * sum(diag(GRM)))/nrow(GRM)
   
   a1 <- as.numeric(t(res_S[obs_protein_index]) %*% GRM_o %*% res_T)
-  hat_tau_TS <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_TS <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_S[obs_protein_index] * res_T)
   hat_sigma_TS <- (a2 - hat_tau_TS * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
@@ -2420,7 +2473,8 @@ SynSurrG_typeIerror_step1 <- function(mydf) {
   .vc <- constrain_vc_bivariate(hat_tau_T2, hat_tau_TS, hat_tau_S2,
                                 hat_sigma_T2, hat_sigma_TS, hat_sigma_S2,
                                 var_T = mean(res_T^2), var_S = mean(res_S^2),
-                                label = "SynSurrG_typeIerror_step1")
+                                label = "SynSurrG_typeIerror_step1",
+                                dbar_T = mean(diag(GRM_obs_obs)), dbar_S = mean(diag(GRM)))
   hat_tau_T2   <- .vc$tau_T2;   hat_tau_TS   <- .vc$tau_TS;   hat_tau_S2   <- .vc$tau_S2
   hat_sigma_T2 <- .vc$sigma_T2; hat_sigma_TS <- .vc$sigma_TS; hat_sigma_S2 <- .vc$sigma_S2
   vc <- .vc$vc
@@ -2574,19 +2628,19 @@ SynSurrG_ablation_estimate <- function(mydf) {
   diag(GRM_oall) <- 0
   
   a1 <- as.numeric(t(res_T) %*% GRM_o %*% res_T)
-  hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_T * res_T)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
   
   a1 <- as.numeric(t(res_S) %*% GRM_oall %*% res_S)
-  hat_tau_S2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_S2 <- .ss_mom_ratio(a1, sum((GRM_oall)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_S * res_S)
   hat_sigma_S2 <- (a2 - hat_tau_S2 * sum(diag(GRM)))/nrow(GRM)
   
   a1 <- as.numeric(t(res_S[obs_protein_index]) %*% GRM_o %*% res_T)
-  hat_tau_TS <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_TS <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_S[obs_protein_index] * res_T)
   hat_sigma_TS <- (a2 - hat_tau_TS * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
@@ -2595,7 +2649,8 @@ SynSurrG_ablation_estimate <- function(mydf) {
   .vc <- constrain_vc_bivariate(hat_tau_T2, hat_tau_TS, hat_tau_S2,
                                 hat_sigma_T2, hat_sigma_TS, hat_sigma_S2,
                                 var_T = mean(res_T^2), var_S = mean(res_S^2),
-                                label = "SynSurrG_ablation_estimate")
+                                label = "SynSurrG_ablation_estimate",
+                                dbar_T = mean(diag(GRM_obs_obs)), dbar_S = mean(diag(GRM)))
   hat_tau_T2   <- .vc$tau_T2;   hat_tau_TS   <- .vc$tau_TS;   hat_tau_S2   <- .vc$tau_S2
   hat_sigma_T2 <- .vc$sigma_T2; hat_sigma_TS <- .vc$sigma_TS; hat_sigma_S2 <- .vc$sigma_S2
   vc <- .vc$vc
@@ -2727,7 +2782,7 @@ OracleG_typeIerror_step1 <- function(mydf) {
   diag(GRM_oall) <- 0
   
   a1 <- as.numeric(t(model_lm$residuals) %*% GRM_oall %*% model_lm$residuals)
-  hat_tau_T2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_oall)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM)))/nrow(GRM)
@@ -2735,7 +2790,8 @@ OracleG_typeIerror_step1 <- function(mydf) {
   ## --- constrain the variance components (see header) --------------------
   ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
   .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
-                                 var_T = mean(model_lm$residuals^2), label = "OracleG_typeIerror_step1")
+                                 var_T = mean(model_lm$residuals^2), label = "OracleG_typeIerror_step1",
+                                                                     dbar = mean(diag(GRM)))
   hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
   vc <- .vc$vc
   
@@ -2815,7 +2871,7 @@ OracleG_ablation_estimate <- function(mydf) {
   diag(GRM_oall) <- 0
   
   a1 <- as.numeric(t(model_lm$residuals) %*% GRM_oall %*% model_lm$residuals)
-  hat_tau_T2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_oall)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM)))/nrow(GRM)
@@ -2823,7 +2879,8 @@ OracleG_ablation_estimate <- function(mydf) {
   ## --- constrain the variance components (see header) --------------------
   ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
   .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
-                                 var_T = mean(model_lm$residuals^2), label = "OracleG_ablation_estimate")
+                                 var_T = mean(model_lm$residuals^2), label = "OracleG_ablation_estimate",
+                                                                     dbar = mean(diag(GRM)))
   hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
   vc <- .vc$vc
   
@@ -2905,7 +2962,7 @@ ObsG_typeIerror_step1 <- function(mydf) {
   diag(GRM_o) <- 0
   
   a1 <- as.numeric(t(model_lm$residuals) %*% GRM_o %*% model_lm$residuals)
-  hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
@@ -2913,7 +2970,8 @@ ObsG_typeIerror_step1 <- function(mydf) {
   ## --- constrain the variance components (see header) --------------------
   ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
   .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
-                                 var_T = mean(model_lm$residuals^2), label = "ObsG_typeIerror_step1")
+                                 var_T = mean(model_lm$residuals^2), label = "ObsG_typeIerror_step1",
+                                                                     dbar = mean(diag(GRM_obs_obs)))
   hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
   vc <- .vc$vc
   
@@ -2980,7 +3038,7 @@ ObsG_hatY_typeIerror_step1 <- function(mydf) {
   diag(GRM_o) <- 0
   
   a1 <- as.numeric(t(model_lm$residuals) %*% GRM_o %*% model_lm$residuals)
-  hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
@@ -2988,7 +3046,8 @@ ObsG_hatY_typeIerror_step1 <- function(mydf) {
   ## --- constrain the variance components (see header) --------------------
   ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
   .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
-                                 var_T = mean(model_lm$residuals^2), label = "ObsG_hatY_typeIerror_step1")
+                                 var_T = mean(model_lm$residuals^2), label = "ObsG_hatY_typeIerror_step1",
+                                                                     dbar = mean(diag(GRM_obs_obs)))
   hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
   vc <- .vc$vc
   
@@ -3052,7 +3111,7 @@ unObsG_hatY_typeIerror_step1 <- function(mydf) {
   diag(GRM_uno) <- 0
   
   a1 <- as.numeric(t(model_lm$residuals) %*% GRM_uno %*% model_lm$residuals)
-  hat_tau_T2 <- a1 / sum((GRM_uno)^2) #equal to sum(diag((GRM_uno) %*% t(GRM_unobs_unobs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_uno)^2)) #equal to sum(diag((GRM_uno) %*% t(GRM_unobs_unobs)))
   
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_unobs_unobs)))/nrow(GRM_unobs_unobs)
@@ -3060,7 +3119,8 @@ unObsG_hatY_typeIerror_step1 <- function(mydf) {
   ## --- constrain the variance components (see header) --------------------
   ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
   .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
-                                 var_T = mean(model_lm$residuals^2), label = "unObsG_hatY_typeIerror_step1")
+                                 var_T = mean(model_lm$residuals^2), label = "unObsG_hatY_typeIerror_step1",
+                                                                     dbar = mean(diag(GRM_unobs_unobs)))
   hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
   vc <- .vc$vc
   
@@ -3398,19 +3458,19 @@ SynSurrG_eachG_step1 <- function(mydf,G) {
   diag(GRM_oall) <- 0
   
   a1 <- as.numeric(t(res_T) %*% GRM_o %*% res_T)
-  hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_T * res_T)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
   
   a1 <- as.numeric(t(res_S) %*% GRM_oall %*% res_S)
-  hat_tau_S2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_S2 <- .ss_mom_ratio(a1, sum((GRM_oall)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_S * res_S)
   hat_sigma_S2 <- (a2 - hat_tau_S2 * sum(diag(GRM)))/nrow(GRM)
   
   a1 <- as.numeric(t(res_S[obs_protein_index]) %*% GRM_o %*% res_T)
-  hat_tau_TS <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_TS <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_S[obs_protein_index] * res_T)
   hat_sigma_TS <- (a2 - hat_tau_TS * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
@@ -3419,7 +3479,8 @@ SynSurrG_eachG_step1 <- function(mydf,G) {
   .vc <- constrain_vc_bivariate(hat_tau_T2, hat_tau_TS, hat_tau_S2,
                                 hat_sigma_T2, hat_sigma_TS, hat_sigma_S2,
                                 var_T = mean(res_T^2), var_S = mean(res_S^2),
-                                label = "SynSurrG_eachG_step1")
+                                label = "SynSurrG_eachG_step1",
+                                dbar_T = mean(diag(GRM_obs_obs)), dbar_S = mean(diag(GRM)))
   hat_tau_T2   <- .vc$tau_T2;   hat_tau_TS   <- .vc$tau_TS;   hat_tau_S2   <- .vc$tau_S2
   hat_sigma_T2 <- .vc$sigma_T2; hat_sigma_TS <- .vc$sigma_TS; hat_sigma_S2 <- .vc$sigma_S2
   vc <- .vc$vc
@@ -3551,7 +3612,7 @@ ObsG_ablation_estimate <- function(mydf) {
   diag(GRM_o) <- 0
   
   a1 <- as.numeric(t(model_lm$residuals) %*% GRM_o %*% model_lm$residuals)
-  hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
@@ -3559,7 +3620,8 @@ ObsG_ablation_estimate <- function(mydf) {
   ## --- constrain the variance components (see header) --------------------
   ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
   .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
-                                 var_T = mean(model_lm$residuals^2), label = "ObsG_ablation_estimate")
+                                 var_T = mean(model_lm$residuals^2), label = "ObsG_ablation_estimate",
+                                                                     dbar = mean(diag(GRM_obs_obs)))
   hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
   vc <- .vc$vc
   
@@ -4463,19 +4525,19 @@ score_test_SynSurrG_power_sim_one_g_to_one_Y <- function(mydf) {
   diag(GRM_oall) <- 0
   
   a1 <- as.numeric(t(res_T) %*% GRM_o %*% res_T)
-  hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_T * res_T)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
   
   a1 <- as.numeric(t(res_S) %*% GRM_oall %*% res_S)
-  hat_tau_S2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_S2 <- .ss_mom_ratio(a1, sum((GRM_oall)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_S * res_S)
   hat_sigma_S2 <- (a2 - hat_tau_S2 * sum(diag(GRM)))/nrow(GRM)
   
   a1 <- as.numeric(t(res_S[obs_protein_index]) %*% GRM_o %*% res_T)
-  hat_tau_TS <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_TS <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(res_S[obs_protein_index] * res_T)
   hat_sigma_TS <- (a2 - hat_tau_TS * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
@@ -4484,7 +4546,8 @@ score_test_SynSurrG_power_sim_one_g_to_one_Y <- function(mydf) {
   .vc <- constrain_vc_bivariate(hat_tau_T2, hat_tau_TS, hat_tau_S2,
                                 hat_sigma_T2, hat_sigma_TS, hat_sigma_S2,
                                 var_T = mean(res_T^2), var_S = mean(res_S^2),
-                                label = "score_test_SynSurrG_power_sim_one_g_to_one_Y")
+                                label = "score_test_SynSurrG_power_sim_one_g_to_one_Y",
+                                dbar_T = mean(diag(GRM_obs_obs)), dbar_S = mean(diag(GRM)))
   hat_tau_T2   <- .vc$tau_T2;   hat_tau_TS   <- .vc$tau_TS;   hat_tau_S2   <- .vc$tau_S2
   hat_sigma_T2 <- .vc$sigma_T2; hat_sigma_TS <- .vc$sigma_TS; hat_sigma_S2 <- .vc$sigma_S2
   vc <- .vc$vc
@@ -4628,7 +4691,7 @@ score_test_ObsG_power_sim_one_g_to_one_Y <- function(mydf) {
   diag(GRM_o) <- 0
   
   a1 <- as.numeric(t(model_lm1$residuals) %*% GRM_o %*% model_lm1$residuals)
-  hat_tau_T2 <- a1 / sum((GRM_o)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_o)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(model_lm1$residuals * model_lm1$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM_obs_obs)))/nrow(GRM_obs_obs)
@@ -4636,7 +4699,8 @@ score_test_ObsG_power_sim_one_g_to_one_Y <- function(mydf) {
   ## --- constrain the variance components (see header) --------------------
   ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
   .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
-                                 var_T = mean(model_lm1$residuals^2), label = "score_test_ObsG_power_sim_one_g_to_one_Y")
+                                 var_T = mean(model_lm1$residuals^2), label = "score_test_ObsG_power_sim_one_g_to_one_Y",
+                                                                      dbar = mean(diag(GRM_obs_obs)))
   hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
   vc <- .vc$vc
   
@@ -4730,7 +4794,7 @@ score_test_OracleG_power_sim_one_g_to_one_Y <- function(mydf) {
   diag(GRM_oall) <- 0
   
   a1 <- as.numeric(t(model_lm$residuals) %*% GRM_oall %*% model_lm$residuals)
-  hat_tau_T2 <- a1 / sum((GRM_oall)^2) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
+  hat_tau_T2 <- .ss_mom_ratio(a1, sum((GRM_oall)^2)) #equal to sum(diag((GRM_o) %*% t(GRM_obs_obs)))
   
   a2 <- sum(model_lm$residuals * model_lm$residuals)
   hat_sigma_T2 <- (a2 - hat_tau_T2 * sum(diag(GRM)))/nrow(GRM)
@@ -4738,7 +4802,8 @@ score_test_OracleG_power_sim_one_g_to_one_Y <- function(mydf) {
   ## --- constrain the variance components (see header) --------------------
   ## Sigma11 = tau2 * GRM + sigma2 * I is PD iff tau2 >= 0 and sigma2 > 0.
   .vc <- constrain_vc_univariate(hat_tau_T2, hat_sigma_T2,
-                                 var_T = mean(model_lm$residuals^2), label = "score_test_OracleG_power_sim_one_g_to_one_Y")
+                                 var_T = mean(model_lm$residuals^2), label = "score_test_OracleG_power_sim_one_g_to_one_Y",
+                                                                     dbar = mean(diag(GRM)))
   hat_tau_T2 <- .vc$tau2; hat_sigma_T2 <- .vc$sigma2
   vc <- .vc$vc
   
