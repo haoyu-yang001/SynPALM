@@ -27,7 +27,23 @@ for (m in c("ObsG", "SynG")) {
   p <- suppressMessages(p + scale_y_continuous(trans = pseudo_log_trans(sigma = 1, base = 10),
                                                breaks = c(0, 1, 10, 100, 1000), labels = label_comma(accuracy = 1),
                                                expand = expansion(mult = c(0, 0.15))))
+  ## revision: gene labels lifted above the significance line (they sat on the dashed line),
+  ## chromosomes 18, 20 and 21 not labelled (the labels of the short chromosomes ran
+  ## together; 19 is kept because GDF15 is on it), larger text for the composite figure
+  is_lab <- vapply(p$layers, function(l) inherits(l$geom, "GeomTextRepel"), logical(1))
+  lab_df <- p$layers[[which(is_lab)]]$data
+  p$layers <- p$layers[!is_lab]
+  ctr <- p$data %>% group_by(chr) %>% summarise(center = (max(BPcum) + min(BPcum)) / 2)
+  p <- suppressMessages(p +
+    geom_text_repel(data = lab_df, aes(label = gene), size = 3.6, fontface = "italic", color = "black",
+                    nudge_y = 0.35, direction = "both", min.segment.length = 0, box.padding = 0.4,
+                    point.padding = 0.15, force = 8, segment.color = "grey40", segment.size = 0.35,
+                    max.overlaps = Inf, seed = 42) +
+    scale_x_continuous(breaks = ctr$center, labels = ifelse(ctr$chr %in% c(18, 20, 21), "", ctr$chr),
+                       expand = expansion(mult = 0.01)) +
+    theme(axis.text.x = element_text(size = 10), axis.text.y = element_text(size = 10),
+          axis.title = element_text(size = 12), plot.title = element_text(size = 14)))
   tag <- if (m == "ObsG") "obs" else "syn"
   for (ext in c("pdf", "png"))
-    ggsave(sprintf("%sManhattan_%s_gwas_%s.%s", OUT, tag, protein_name, ext), p, width = 8, height = 4, dpi = 300)
+    ggsave(sprintf("%sManhattan_%s_gwas_%s.%s", OUT, tag, protein_name, ext), p, width = 6.5, height = 3.4, dpi = 300)
 }

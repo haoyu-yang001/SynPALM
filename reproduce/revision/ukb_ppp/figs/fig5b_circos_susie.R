@@ -17,7 +17,7 @@ suppressPackageStartupMessages({ library(circlize); library(data.table) })
 setwd("<PROJECT_DIR>")
 TOP_N <- if (length(commandArgs(TRUE))) as.integer(commandArgs(TRUE)[1]) else 25L
 SNP_LABEL_PIP <- 0.95; PIP_LINK <- 0.95
-SNP_LABEL_CEX <- 0.38; PROT_LABEL_CEX <- 0.45
+SNP_LABEL_CEX <- 0.5; PROT_LABEL_CEX <- 0.72; PROT_LABEL_GAP <- 6   # degrees between protein labels   # revision 2026-10-19: drawn on an 8 in canvas, larger labels
 TRANS_W <- 2e5; CIS_W <- 4e5
 OUT <- "results/figs_cf_noPRS_noPC/"
 
@@ -57,14 +57,16 @@ print(cs[, .(credible_sets = .N, chromosomes = uniqueN(chr), pip95 = sum(top_pip
 
 darken <- function(col, f) { v <- col2rgb(col) / 255; rgb(v[1, ] * f, v[2, ] * f, v[3, ] * f) }
 draw <- function() {
+  par(mar = c(0.2, 0.2, 0.2, 0.2))
   circos.par(start.degree = 90, gap.degree = c(rep(0.8, 21), 3), track.margin = c(0.003, 0.003),
-             cell.padding = c(0, 0, 0, 0), points.overflow.warning = FALSE, circle.margin = 0.45)
+             cell.padding = c(0, 0, 0, 0), points.overflow.warning = FALSE, circle.margin = 0.06)
   circos.initializeWithIdeogram(species = "hg38", chromosome.index = paste0("chr", 1:22),
-                                plotType = c("ideogram", "labels"), ideogram.height = 0.03, labels.cex = 0.55)
+                                plotType = c("ideogram", "labels"), ideogram.height = 0.03, labels.cex = 0.8)
   if (nrow(lab))
     circos.genomicLabels(data.frame(chr = lab$chr_c, start = lab$pos, end = lab$pos + 1, label = lab$rsid),
-                         labels.column = 4, side = "outside", col = lab$color, line_col = lab$color,
-                         cex = SNP_LABEL_CEX, font = 1, line_lwd = 0.6, padding = 0.5)
+                         labels.column = 4, side = "outside", col = darken(lab$color, 0.8), line_col = lab$color,
+                         cex = SNP_LABEL_CEX, font = 1, line_lwd = 0.6, padding = 0.3,
+                         connection_height = mm_h(5))
   ymax <- 52
   circos.track(track.height = 0.09, bg.col = "#F8F8F8", bg.border = "#DDDDDD", ylim = c(0, ymax),
     panel.fun = function(region, value, ...) {
@@ -75,23 +77,48 @@ draw <- function() {
                      lwd = if (sub$in_cs[i]) 1.5 else 0.4)
       circos.lines(get.cell.meta.data("xlim"), rep(-log10(5e-8), 2), col = "red", lty = 2, lwd = 0.5)
     })
-  if (nrow(gp))
-    circos.genomicLabels(data.frame(chr = gp$chr_c, start = gp$pos, end = gp$pos + 1, label = gp$label),
-                         labels.column = 4, side = "inside", col = gp$color, line_col = gp$color,
-                         cex = PROT_LABEL_CEX, font = 2, line_lwd = 0.8, padding = 0.5)
+  ## protein labels (revision): spread along the circle so that they do not overlap and
+  ## connect them to the gene position by an elbow line (circos.genomicLabels left them
+  ## overlapping where several genes are close, e.g. chromosomes 17-21)
+  r_top <- get.cell.meta.data("cell.bottom.radius", track.index = get.current.track.index())
+  circos.track(ylim = c(0, 1), track.height = 0.23, bg.border = NA, cell.padding = c(0, 0, 0, 0))
   for (i in seq_len(nrow(links))) {
     l <- links[i]
     tryCatch(circos.link(l$gene_chr, l$gene_pos, l$chr_c, l$pos,
                          col = adjustcolor(darken(l$color, if (l$is_cis) 0.5 else 0.85), alpha.f = if (l$is_cis) 1 else 0.75),
                          lwd = if (l$is_cis) 2.5 else 1, h.ratio = if (l$is_cis) 0.35 else 0.6), error = function(e) NULL)
   }
-  legend(x = 0.72, y = -0.68, bty = "n", cex = 0.48,
-         legend = c("In a 95% credible set", "Other variant with PIP >= 0.01", expression(P == 5 %*% 10^-8),
-                    "trans-pQTL (gene -> variant)"),
+  ## protein labels on top of the arcs
+  if (nrow(gp)) {
+    th0 <- mapply(function(ch, x) circlize(x, 0.5, sector.index = ch, track.index = 1)[1, "theta"], gp$chr_c, gp$pos)
+    o <- order(-th0); th <- th0[o]                       # clockwise order
+    gap <- PROT_LABEL_GAP
+    for (it in 1:5000) {                                 # 1-D repulsion on the circle
+      d <- -diff(c(th, th[1] - 360)); bad <- which(d < gap - 1e-6)
+      if (!length(bad)) break
+      for (j in bad) { k <- if (j == length(th)) 1 else j + 1; m <- (gap - d[j]) / 2 + 1e-4; th[j] <- th[j] + m; th[k] <- th[k] - m }
+    }
+    cat(sprintf("protein labels: %d iterations, min gap %.2f degrees\n", it, min(-diff(c(th, th[1] - 360)))))
+    th1 <- numeric(length(th)); th1[o] <- th
+    r1 <- r_top - 0.012; r2 <- r_top - 0.045; r3 <- r_top - 0.075; r4 <- r3 - 0.008
+    rad <- pi / 180
+    for (i in seq_len(nrow(gp))) {
+      a0 <- th0[i] * rad; a1 <- th1[i] * rad
+      lines(c(r1 * cos(a0), r2 * cos(a0), r3 * cos(a1)), c(r1 * sin(a0), r2 * sin(a0), r3 * sin(a1)),
+            col = gp$color[i], lwd = 0.8)
+      left <- cos(a1) < 0
+      text(r4 * cos(a1), r4 * sin(a1), gp$label[i], srt = if (left) th1[i] + 180 else th1[i],
+           adj = c(if (left) 0 else 1, 0.5), col = darken(gp$color[i], 0.85), cex = PROT_LABEL_CEX, font = 2)
+    }
+  }
+  op <- par(xpd = NA); on.exit(par(op))
+  legend("bottomright", inset = c(-0.01, -0.01), bty = "n", cex = 0.6, y.intersp = 0.9,
+         legend = expression("In a 95% credible set", "Other variant with PIP" >= 0.01, P == 5 %*% 10^-8,
+                             "trans-pQTL (gene" %->% "variant)"),
          col = c("black", "#CCCCCC", "red", "#888888"), pch = c(18, 16, NA, NA),
-         lty = c(NA, NA, 2, 1), lwd = c(NA, NA, 1, 1), title = expression("Inner track: Syn-PALM " * -log[10] * P * " (truncated at 50)"))
+         lty = c(NA, NA, 2, 1), lwd = c(NA, NA, 1, 1), title = expression("Inner track: Syn-PALM -log"[10] * "P" <= 50))
   circos.clear()
 }
-cairo_pdf(paste0(OUT, "fig5b_circos_susie.pdf"), width = 12, height = 12); draw(); invisible(dev.off())
-png(paste0(OUT, "fig5b_circos_susie.png"), width = 12, height = 12, units = "in", res = 200, type = "cairo"); draw(); invisible(dev.off())
+cairo_pdf(paste0(OUT, "fig5b_circos_susie.pdf"), width = 8, height = 8); draw(); invisible(dev.off())
+png(paste0(OUT, "fig5b_circos_susie.png"), width = 8, height = 8, units = "in", res = 300, type = "cairo"); draw(); invisible(dev.off())
 cat("wrote", paste0(OUT, "fig5b_circos_susie.pdf"), "\n")

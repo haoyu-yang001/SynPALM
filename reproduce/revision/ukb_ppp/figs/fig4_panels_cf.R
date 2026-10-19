@@ -569,6 +569,8 @@ top_gene <- function(r) { g <- rsid2gene[names(sort(table(r), decreasing = TRUE)
 # ==========================================
 # 4. 生成中心主图 (p_main)
 # ==========================================
+## revision: chromosomes 18, 20 and 21 are not labelled (the labels of the short chromosomes ran together)
+chr_lab3 <- ifelse(chr_offsets$chr %in% c("18", "20", "21"), "", chr_offsets$chr)
 p_main <- ggplot(data = plot_df, 
                  aes(x = qtl_pos_cum, y = gene_pos_cum)) +
   geom_vline(xintercept = chr_offsets$offset, color = "grey90") +
@@ -577,11 +579,11 @@ p_main <- ggplot(data = plot_df,
   scale_color_manual(values = c("Cis" = "#E15759", "Trans" = "#76B7B2"), 
                      guide = guide_legend(title = NULL, override.aes = list(size = 3, alpha = 1))) +
   scale_size_continuous(range = c(0.01, 2)) +
-  scale_x_continuous(breaks = chr_offsets$offset + chr_offsets$chr_len/2, labels = chr_offsets$chr, expand = c(0,0)) +
-  scale_y_continuous(breaks = chr_offsets$offset + chr_offsets$chr_len/2, labels = chr_offsets$chr, expand = c(0,0)) +
-  theme_bw() +
+  scale_x_continuous(breaks = chr_offsets$offset + chr_offsets$chr_len/2, labels = chr_lab3, expand = c(0,0)) +
+  scale_y_continuous(breaks = chr_offsets$offset + chr_offsets$chr_len/2, labels = chr_lab3, expand = c(0,0)) +
+  theme_bw(base_size = 13) +
   theme(panel.grid = element_blank(), legend.position = "bottom") +
-  labs(x = "pQTL Position (Chromosome)", y = "Protein Position (Chromosome)", size = "-log10(P)")
+  labs(x = "pQTL Position (Chromosome)", y = "Protein Position (Chromosome)", size = expression(-log[10] * P))
 
 # ==========================================
 # 5. 生成顶部热点图 (p_top)
@@ -613,15 +615,15 @@ p_top <- ggplot(plot_df %>%
   geom_text_repel(
     data = hotspot_labels,
     aes(x = pos_cum, y = display_count, label = label_text),
-    size = 2.6, fontface = "italic", direction = "both", nudge_y = 45, box.padding = 0.35,
+    size = 3.2, fontface = "italic", direction = "both", nudge_y = 110, box.padding = 0.25,
     segment.size = 0.2, min.segment.length = 0, max.overlaps = Inf, force = 8, seed = 1
   ) +
-  scale_y_continuous(limits = c(0, 360), breaks = c(0, 100, 200, 300), expand = c(0, 0)) + 
+  scale_y_continuous(limits = c(0, 560), breaks = c(0, 100, 200), expand = c(0, 0), guide = guide_axis(cap = "upper")) + 
   scale_x_continuous(expand = c(0,0), limits = c(0, max(chr_offsets$offset + chr_offsets$chr_len) + 1e7)) +
-  theme_classic() +
+  theme_classic(base_size = 13) +
   theme(axis.title.x = element_blank(), axis.text.x = element_blank(), 
         axis.ticks.x = element_blank(), plot.margin = margin(b = 0, t = 20, r = 10, l = 10)) +
-  labs(y = "No. of associated \nproteins")
+  labs(y = "No. of associated\nproteins")
 
 # ==========================================
 # 6. 生成右侧变异数量统计图 (p_right)
@@ -641,7 +643,7 @@ p_right <- ggplot(protein_counts, aes(y = gene_pos_cum, x = display_count)) +
   # 重要：这里的 Y 轴 limits 必须与中心主图保持绝对一致
   scale_y_continuous(expand = c(0, 0), 
                      limits = c(0, max(chr_offsets$offset + chr_offsets$chr_len) + 1e7)) +
-  theme_classic() +
+  theme_classic(base_size = 13) +
   theme(axis.title.y = element_blank(),
         axis.text.y = element_blank(),
         axis.ticks.y = element_blank(),
@@ -656,15 +658,15 @@ combined_plot <- p_top + plot_spacer() + p_main + p_right +
     ncol = 2, 
     nrow = 2, 
     widths = c(4, 1), 
-    heights = c(1, 4),
+    heights = c(1.5, 4),
     guides = 'collect'
   ) & theme(legend.position = "bottom")
 
 ggsave(
   plot = combined_plot,
   file = "<PROJECT_DIR>/results/figs_cf_noPRS_noPC/Summary_of_pQTLs_ThreePanel.pdf",
-  width = 10,     # 根据增加了右侧面板，稍微调宽了一点
-  height = 8.5, 
+  width = 8.5,    # revision: smaller canvas, larger text (panel A of Fig 5 is about 12.5 cm wide)
+  height = 7.6, 
   units = "in",
   dpi = 480
 )
