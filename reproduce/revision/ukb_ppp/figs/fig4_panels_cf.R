@@ -162,8 +162,8 @@ panel4 <- ggplot(plot_data_long, aes(x = fct_reorder(x_label, Count_Value, .fun 
 ggsave(
   plot = panel4,
   file = "<PROJECT_DIR>/results/figs_cf_noPRS_noPC/panel4_results.pdf",
-  width = 6.0,
-  height = 3.2,
+  width = 4.9,    # revision 2026-10-19: smaller canvas for the compact Fig 4 layout (was 6.0 x 3.2)
+  height = 2.6,
   units = "in",
   dpi = 480
 )
