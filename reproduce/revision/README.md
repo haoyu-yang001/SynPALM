@@ -30,7 +30,6 @@ used. All scripts skip outputs that already exist, so interrupted arrays can be 
 |---|---|
 | `common/` | `funcs_v2.R` (model, method-of-moments variance components, score tests, simulation data-generating functions), `funcs_fastscan.R` (vectorised Syn-PALM score test, identical to the per-SNP version up to 1e-13), `Fun.R` (POP-GWAS) |
 | `simulations/` | simulations of the revision (`*_rev1.R`), their submission scripts, analysis and plotting scripts (common figure style: `theme_rev1.R`); `sim_dgp_rev1.R` is the general data-generating model of the new simulations; `power_bias_rho075_rev1.R` and `true_geno_power_rho075_rev1.R` run every $\rho$ (argument `rho`) |
-| `simulations/figs_compose/` | LaTeX files that assemble multi-panel figures from the panels |
 | `ukb_ppp/pipeline/` | UKB-PPP analysis: sample and predictor preparation, five-fold cross-fitting folds by relatedness cluster, step 1 (cross-fitted random-forest synthetic phenotype), step 2 (genome-wide scan), split-sample and permutation analyses, and their SLURM scripts |
 | `ukb_ppp/post/` | per-protein post-processing, cross-protein summaries, external validation, fine-mapping (SuSiE), SNPsea input, *trans* hubs, stratified analyses, predictor tables |
 | `ukb_ppp/figs/` | figure panels of Figs 4 and 5 and supplementary UKB-PPP figures; `build_composite_figs.sh` builds Figs 2–5 |
@@ -53,8 +52,8 @@ used. All scripts skip outputs that already exist, so interrupted arrays can be 
 | Height ablation (main-text table and Supp. Section S4) | `height_ablation/*.R` |
 | UKB-PPP headline numbers, Table S13 (gain by prediction accuracy) | `ukb_ppp/post/aggregate_all.R`, `headline_numbers.R`, `category_and_rho_strata.R` |
 | External validation (GWAS Catalog, Sun et al.), additional associations | `ukb_ppp/post/external_validation.R` |
-| Fig. 4 | `ukb_ppp/figs/fig4_panels_cf.R`, `fig4c_top20_cf.R`, `fig4f_snpsea.R` (SNPsea: `ukb_ppp/post/snpsea_prep.R`, `ukb_ppp/pipeline/run_snpsea.sh`), `fig4_rev1.tex` |
-| Fig. 5 | `ukb_ppp/figs/fig4_panels_cf.R` (panel A), `ukb_ppp/post/finemap_susie.R` + `ukb_ppp/figs/fig5b_circos_susie.R` (panel B), `ukb_ppp/figs/manhattan_protein_cf.R` (panel C), `fig5_rev1.tex` |
+| Fig. 4 | `ukb_ppp/figs/fig4_panels_cf.R`, `fig4c_top20_cf.R`, `fig4f_snpsea.R` (SNPsea: `ukb_ppp/post/snpsea_prep.R`, `ukb_ppp/pipeline/run_snpsea.sh`) |
+| Fig. 5 | `ukb_ppp/figs/fig4_panels_cf.R` (panel A), `ukb_ppp/post/finemap_susie.R` + `ukb_ppp/figs/fig5b_circos_susie.R` (panel B), `ukb_ppp/figs/manhattan_protein_cf.R` (panel C) |
 | *Trans* hubs | `ukb_ppp/post/trans_hubs.R` |
 | Split-sample replication, Table S12 | `ukb_ppp/pipeline/split_validation_crossfit.R`, `ukb_ppp/post/summarize_split.R` |
 | Permutation QQ plot, Fig. S18 | `ukb_ppp/pipeline/step2_protein_fast_jointperm.R`, `ukb_ppp/post/qq_permuted.R` |
