@@ -32,7 +32,7 @@ used. All scripts skip outputs that already exist, so interrupted arrays can be 
 | `simulations/` | simulations of the revision (`*_rev1.R`), their submission scripts, analysis and plotting scripts (common figure style: `theme_rev1.R`); `sim_dgp_rev1.R` is the general data-generating model of the new simulations; `power_bias_rho075_rev1.R` and `true_geno_power_rho075_rev1.R` run every $\rho$ (argument `rho`) |
 | `ukb_ppp/pipeline/` | UKB-PPP analysis: sample and predictor preparation, five-fold cross-fitting folds by relatedness cluster, step 1 (cross-fitted random-forest synthetic phenotype), step 2 (genome-wide scan), split-sample and permutation analyses, and their SLURM scripts |
 | `ukb_ppp/post/` | per-protein post-processing, cross-protein summaries, external validation, fine-mapping (SuSiE), SNPsea input, *trans* hubs, stratified analyses, predictor tables |
-| `ukb_ppp/figs/` | figure panels of Figs 4 and 5 and supplementary UKB-PPP figures; `build_composite_figs.sh` builds Figs 2–5 |
+| `ukb_ppp/figs/` | figure panels of Figs 4 and 5 and supplementary UKB-PPP figures |
 | `height_ablation/` | height ablation analysis with cluster-based cross-fitting |
 
 ## Figures and tables
