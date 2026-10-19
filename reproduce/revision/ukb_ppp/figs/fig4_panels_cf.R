@@ -1088,19 +1088,22 @@ genome_max <- x_max
 chr_bounds <- data.frame(xintercept = chr_offsets$offset[-1])
 chr_mids   <- chr_offsets %>% mutate(mid = offset + chr_len / 2)
 
-# --- 3. hotspot 标签 + 旋转角度 ---
-hotspot_proteins <- protein_counts %>%
-  filter(is_hotspot) %>%
-  mutate(pos_bin = round(gene_pos_cum / (genome_max * 0.005))) %>%
-  group_by(pos_bin) %>%
-  slice_max(count, n = 1, with_ties = FALSE) %>%
-  ungroup() %>%
-  arrange(desc(count)) %>%
+# --- 3. labels: the N_LAB proteins with the most primary associations (revision 2026-10-19;
+##     the earlier rule, more than 45 associations, labelled only 2 proteins). Proteins whose
+##     genes lie within 1.2% of the genome of each other share one label, so labels do not overlap.
+N_LAB <- 20
+top_prot <- protein_counts %>% filter(!is.na(gene_pos_cum)) %>%
+  slice_max(count, n = N_LAB, with_ties = FALSE)
+protein_counts <- protein_counts %>% mutate(is_hotspot = protein_short_name %in% top_prot$protein_short_name)
+hotspot_proteins <- top_prot %>%
+  arrange(gene_pos_cum) %>%
+  mutate(grp = cumsum(c(TRUE, diff(gene_pos_cum) > genome_max * 0.012))) %>%
+  group_by(grp) %>% arrange(desc(count), .by_group = TRUE) %>%
+  summarise(label_text   = paste0(toupper(protein_short_name), " (", count, ")", collapse = "\n"),
+            gene_pos_cum = mean(gene_pos_cum), .groups = "drop") %>%
   mutate(
-    label_text = paste0(protein_short_name, "\n", top_rsid, "(", count, ")"),
     angle_deg  = 90 - (gene_pos_cum / genome_max) * 360,
-    angle_text = ifelse(gene_pos_cum > genome_max / 2,
-                        angle_deg + 180, angle_deg),
+    angle_text = ifelse(gene_pos_cum > genome_max / 2, angle_deg + 180, angle_deg),
     hjust_val  = ifelse(gene_pos_cum > genome_max / 2, 1, 0)
   )
 
@@ -1133,7 +1136,7 @@ p_right_circular <- ggplot() +
     width = genome_max / 1500,
     show.legend = FALSE
   ) +
-  scale_fill_manual(values = c("FALSE" = "#94a3b8", "TRUE" = "#94a3b8")) +
+  scale_fill_manual(values = c("FALSE" = "#b6c2d1", "TRUE" = "#334155")) +   # labelled proteins darker
   
   # ★ y 轴数字（无横杠，居中）
   annotate("text",
@@ -1151,7 +1154,7 @@ p_right_circular <- ggplot() +
         label = label_text,
         angle = angle_text,
         hjust = hjust_val),
-    size       = 3.2,
+    size       = 3.6,
     fontface   = "bold",
     color      = "grey10",
     lineheight = 0.85,
