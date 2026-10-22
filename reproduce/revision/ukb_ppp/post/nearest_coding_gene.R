@@ -3,7 +3,12 @@
 ##   source("code/post_cf3/nearest_coding_gene.R"); nearest_coding_gene(rsid, chr, pos)
 nearest_coding_gene <- function(rsid, chr, pos) {
   suppressPackageStartupMessages({ library(GenomicRanges); library(TxDb.Hsapiens.UCSC.hg38.knownGene); library(org.Hs.eg.db) })
-  g <- suppressMessages(GenomicFeatures::genes(TxDb.Hsapiens.UCSC.hg38.knownGene))
+  ## single.strand.genes.only = FALSE: genes with transcripts also on fix/alt patches
+  ## (e.g. ABO) are otherwise dropped altogether (2,162 genes); keep their ranges on the
+  ## primary autosomes (fixed 2026-10-21)
+  gl <- suppressMessages(GenomicFeatures::genes(TxDb.Hsapiens.UCSC.hg38.knownGene, single.strand.genes.only = FALSE))
+  g <- unlist(gl)
+  g <- g[as.character(seqnames(g)) %in% paste0("chr", 1:22)]
   ann <- suppressMessages(AnnotationDbi::select(org.Hs.eg.db, keys = names(g), keytype = "ENTREZID", columns = c("SYMBOL", "GENETYPE")))
   ann <- ann[!duplicated(ann$ENTREZID), ]
   keep <- ann$ENTREZID[ann$GENETYPE %in% "protein-coding"]
