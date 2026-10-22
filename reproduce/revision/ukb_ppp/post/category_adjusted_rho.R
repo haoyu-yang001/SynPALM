@@ -13,7 +13,8 @@ per <- fread(paste0(D, "summary_per_protein.csv"))
 per[, `:=`(syn = `SynG_loci_5e-08`, obs = `ObsG_loci_5e-08`)]
 pm <- as.data.table(readRDS("<LAB_DIR>/protein_map/final_protein_map_38.rds"))
 pm[, `:=`(key = gsub("-", "_", id), panel4 = sub("_II$", "", panel))]
-per[pm, on = .(protein = key), panel4 := i.panel4]
+per[, key := gsub("-", "_", protein)]   # e.g. hla-e in the results, hla_e in the protein map
+per[pm, on = .(key = key), panel4 := i.panel4]
 d <- per[!is.na(panel4)][, extra := pmax(syn - obs, 0)]
 d[, panel4 := relevel(factor(panel4), ref = "Neurology")]
 f0 <- glm(extra ~ offset(log(obs + 1)) + ns(rho_oof, 3), family = quasipoisson, data = d)

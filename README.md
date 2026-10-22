@@ -43,7 +43,7 @@ to be:
 | Platform | OS version | R version |
 |---|---|---|
 | macOS, Apple silicon | 15.x (Darwin 24.6.0) | 4.3.2 |
-| Linux, Harvard FASRC cluster | Rocky Linux 8.10 | 4.3.1 |
+| Linux, Harvard FASRC cluster | Rocky Linux 8.10 | 4.3.1, 4.4.1 (analyses of the revised manuscript) |
 
 Windows has not been tested. See the note on parallelisation below.
 
@@ -73,7 +73,7 @@ inversion routines will not run.
 Memory scales with cohort size and with the density of the genetic relatedness
 matrix. The bundled demo (20,000 individuals, 500 variants) peaks at
 approximately **583 MB**. The UK Biobank analysis in the manuscript
-(N = 398,800, of whom 29,578 had observed protein measurements) was run on the Harvard FASRC cluster with 20 GB of memory per SLURM array task.
+(N = 402,086, of whom 28,452 to 37,066 per protein had observed protein measurements) was run on the Harvard FASRC cluster with 40 GB of memory and 4 cores per SLURM array task (one protein per task).
 
 ---
 
@@ -252,7 +252,7 @@ this two-stage workflow (`fit` once per protein, writing
    protein is reported per fold and overall.
 3. **Null model.** The measured protein (measured individuals) and the
    synthetic phenotype (everyone) are inverse-normal transformed; variance
-   components are estimated by Haseman-Elston regression on the sparse GRM.
+   components are estimated by the method of moments (Haseman-Elston-type moment equations) on the sparse GRM.
 4. **Score tests.** Variants are tested in chunks of 200.
 
 By default the raw variance-component estimates are used, as in the
@@ -285,12 +285,13 @@ Note which ones require `independent_indices`:
 
 ### Expected wall time at scale
 
-In the manuscript analysis, covering 591,558 directly genotyped variants in
-398,800 individuals, variance component estimation (step 1) took 3.14 minutes on
+In the manuscript analysis, covering 575,236 directly genotyped autosomal variants in
+402,086 individuals, variance component estimation (step 1) took 3.14 minutes on
 a single CPU core, and each subsequent per-variant association test took 0.22
 seconds. Because step 1 is computed once per protein and the SNP-invariant matrix
 quantities are shared across variants, parallelising the per-variant tests across
-100 threads reduced the total runtime to approximately 21 minutes per protein.
+100 threads reduced the total runtime to approximately 24 minutes per protein
+(3 minutes for the null model and 21 minutes for the scan).
 
 The per-variant cost of 4.2 ms in the demo reflects its much smaller cohort.
 

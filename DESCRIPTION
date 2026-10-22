@@ -9,6 +9,8 @@ Description: A specialized statistical framework for enhancing GWAS power by lev
 License: MIT + file LICENSE
 Encoding: UTF-8
 RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.3.0)
 Imports: 
     Matrix,
     methods,

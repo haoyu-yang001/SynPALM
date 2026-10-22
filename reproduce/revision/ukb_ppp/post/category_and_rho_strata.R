@@ -31,7 +31,8 @@ cat(sprintf("Spearman correlation of rho_oof with the per-protein loci ratio: %.
 ## ---- by functional category (Olink panel, as in Fig 4D) -------------------------
 pm <- as.data.table(readRDS("<LAB_DIR>/protein_map/final_protein_map_38.rds"))
 pm[, `:=`(key = gsub("-", "_", id), panel4 = sub("_II$", "", panel))]
-per[pm, on = .(protein = key), panel4 := i.panel4]
+per[, key := gsub("-", "_", protein)]   # e.g. hla-e in the results, hla_e in the protein map
+per[pm, on = .(key = key), panel4 := i.panel4]
 per[, extra := pmax(syn_loci - obs_loci, 0)]
 cr <- per[!is.na(panel4), .(proteins = .N, syn_loci = sum(syn_loci), obs_loci = sum(obs_loci), extra_loci = sum(extra),
                             syn_loci_per_protein = mean(syn_loci), obs_loci_per_protein = mean(obs_loci),
